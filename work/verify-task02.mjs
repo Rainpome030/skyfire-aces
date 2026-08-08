@@ -148,8 +148,8 @@ async function main() {
 
   // ---- 10. 通关第 1 关 → 结算守卫 + 进度后缀 ----
   await evalJs(`GAME.kills = 11; finishMission(true);`);
-  check('通关后解锁进度 2/3', await evalJs(`save.unlockedMissions === 2 && MISSION_DEFS.length === 3`));
-  check('结算按钮带进度后缀', await evalJs(`menuButtons[0].label === '下一任务 (解锁进度 2/3)'`), await evalJs(`menuButtons[0].label`));
+  check('通关后解锁进度 2/9', await evalJs(`save.unlockedMissions === 2 && MISSION_DEFS.length === 9`));
+  check('结算按钮带进度后缀', await evalJs(`menuButtons[0].label === '下一任务 (解锁进度 2/9)'`), await evalJs(`menuButtons[0].label`));
   await shot('02d-complete.png');
 
   // ---- 11. 未解锁下一关时视作最后一关 ----
