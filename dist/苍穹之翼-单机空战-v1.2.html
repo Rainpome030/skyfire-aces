@@ -2311,8 +2311,8 @@ function killPlane(p) {
       player.hp = Math.round(player.maxHp * 0.6);
       player.invuln = 1.2;   // 动画期无敌(留余量),动画结束后由 updatePlayer 重新计时 3 秒
       player.reviveAnim = { t: 0, dur: 1.0 };
-      bullets = bullets.filter(b => !b.enemy);
-      missiles = missiles.filter(m => !m.enemy);
+      for (let bi = 0; bi < bullets.length; bi++) if (bullets[bi].enemy) bullets[bi].life = 0;
+      for (let mi = 0; mi < missiles.length; mi++) if (missiles[mi].enemy) missiles[mi].life = 0;
       GAME.freezeTimer = 0.8;
       GAME.pendingState = null;
       GAME.pendingTimer = 0;
@@ -2661,6 +2661,7 @@ function acquireLock() {
 function updateBullets(dt) {
   for (let i = bullets.length - 1; i >= 0; i--) {
     const b = bullets[i];
+    if (!b) { bullets.splice(i, 1); continue; }
     b.x += b.vx * dt;
     b.y += b.vy * dt;
     b.life -= dt;
@@ -2707,6 +2708,7 @@ function updateBullets(dt) {
 function updateMissiles(dt) {
   for (let i = missiles.length - 1; i >= 0; i--) {
     const m = missiles[i];
+    if (!m) { missiles.splice(i, 1); continue; }
     if (m.target && !m.target.dead) {
       const desired = angleTo(m.x, m.y, m.target.x, m.target.y);
       const diff = angDiff(m.heading, desired);
@@ -5351,6 +5353,7 @@ function updateParticles(dt) {
 
 function drawBullets() {
   for (const b of bullets) {
+    if (b.life <= 0) continue; // 已失效(复活清弹标记)不再绘制,下帧由 updateBullets 清除
     ctx.strokeStyle = b.fromPlayer ? '#ffe9a0' : '#ff6b5e';
     ctx.lineWidth = 3;
     ctx.globalCompositeOperation = 'lighter';
@@ -5364,6 +5367,7 @@ function drawBullets() {
 
 function drawMissiles() {
   for (const m of missiles) {
+    if (m.life <= 0) continue; // 已失效(复活清弹标记)不再绘制
     const dirx = Math.cos(m.heading), diry = Math.sin(m.heading);
     ctx.save();
     ctx.translate(m.x, m.y);
