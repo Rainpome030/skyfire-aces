@@ -422,6 +422,84 @@ const AudioSys = {
   }
 };
 
+const SAVE_KEY = 'skyfire_save_v1';
+const PLANE_DEFS = {
+  gale:    { id: 'gale',    name: '疾风', tag: '均衡', desc: '攻守平衡的标准机体', hpMult: 1.0,  gunDmgMult: 1.0,  fireRateMult: 1.0, turnMult: 1.0,  accelMult: 1.0,  missileBonus: 0,   unlock: null },
+  hammer:  { id: 'hammer',  name: '重锤', tag: '重装', desc: '血量+50% 机炮+25% 机动-20% 导弹+16', hpMult: 1.5, gunDmgMult: 1.25, fireRateMult: 1.0, turnMult: 0.8,  accelMult: 0.8,  missileBonus: 16,  unlock: null },
+  bolt:    { id: 'bolt',    name: '迅雷', tag: '轻灵', desc: '血量-25% 射速+30% 机动+25% 导弹-16', hpMult: 0.75, gunDmgMult: 1.0, fireRateMult: 1.3, turnMult: 1.25, accelMult: 1.25, missileBonus: -16, unlock: null },
+  phoenix: { id: 'phoenix', name: '凤凰', tag: '隐藏', desc: '通关第二章解锁 · 增益buff冷却-30%', hpMult: 1.0, gunDmgMult: 1.0, fireRateMult: 1.0, turnMult: 1.0,  accelMult: 1.0,  missileBonus: 0,   unlock: 'chapter2', buffCdMult: 0.7 }
+};
+const DIFFICULTY_DEFS = {
+  normal: { key: 'normal', name: '普通', enemyHpMult: 1.0,  enemyDmgMult: 1.0,  scoreMult: 1.0, unlock: null },
+  hard:   { key: 'hard',   name: '困难', enemyHpMult: 1.25, enemyDmgMult: 1.35, scoreMult: 1.3, unlock: 'chapter1' }
+};
+
+function defaultSave() {
+  return { version: 1, unlockedMissions: 1, chapterCleared: 0, selectedPlane: 'gale',
+           difficulty: 'normal', bestScore: {}, bestKills: 0,
+           totalKills: 0, totalScore: 0, missionsCleared: 0 };
+}
+
+let save = null;
+
+function loadSave() {
+  const fallback = defaultSave();
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) {
+      save = fallback;
+      return save;
+    }
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid save data');
+    save = Object.assign(fallback, parsed);
+    if (!save.bestScore || typeof save.bestScore !== 'object' || Array.isArray(save.bestScore)) save.bestScore = {};
+    if (!PLANE_DEFS[save.selectedPlane]) save.selectedPlane = 'gale';
+    if (!DIFFICULTY_DEFS[save.difficulty]) save.difficulty = 'normal';
+  } catch (err) {
+    save = fallback;
+  }
+  return save;
+}
+
+function saveNow() {
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify(save));
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+function isPlaneUnlocked(id) {
+  const def = PLANE_DEFS[id];
+  if (!def) return false;
+  if (def.unlock === null) return true;
+  return def.unlock === 'chapter2' && save.chapterCleared >= 2;
+}
+
+function isDifficultyUnlocked(key) {
+  const def = DIFFICULTY_DEFS[key];
+  if (!def) return false;
+  if (def.unlock === null) return true;
+  return def.unlock === 'chapter1' && save.chapterCleared >= 1;
+}
+
+function applyPlaneSetup() {
+  const def = PLANE_DEFS[save.selectedPlane] || PLANE_DEFS.gale;
+  player.maxHp = Math.round(100 * def.hpMult);
+  player.hp = player.maxHp;
+  player.maxMissiles = Math.max(16, 48 + def.missileBonus);
+  player.missiles = player.maxMissiles;
+  player.turn = CFG.turnRate * def.turnMult;
+  player.gunDmgMult = def.gunDmgMult;
+  player.fireRateMult = def.fireRateMult;
+  player.accelMult = def.accelMult;
+  player.buffCdMult = def.buffCdMult || 1;
+}
+
+loadSave();
+
 // ---------- game state ----------
 const CFG = {
   turnRate: 2.7,
@@ -654,9 +732,10 @@ function makeEnemy(kind, x, y) {
     ace: { hp: 720, speed: rand(235, 255), turn: 2.6, r: 26, score: 2500, exp: 1200, fireCd: 1, mslCd: 6, color: '#e04a3f' }
   };
   const d = defs[kind];
+  const diffMult = (DIFFICULTY_DEFS[save.difficulty] || DIFFICULTY_DEFS.normal).enemyHpMult;
   return {
     kind, x, y, heading: rand(0, TAU), speed: d.speed, maxSpeed: d.speed,
-    hp: d.hp, maxHp: d.hp, turn: d.turn, r: d.r, score: d.score, exp: d.exp, color: d.color,
+    hp: d.hp * diffMult, maxHp: d.hp * diffMult, turn: d.turn, r: d.r, score: d.score, exp: d.exp, color: d.color,
     fireCd: d.fireCd, mslCd: d.mslCd, bank: 0, seed: rand(0, 10),
     strafeT: 0, attackT: rand(2, 5), phase2: false, retreat: false, smokeT: 0,
     wreckT: 0, wreckDone: false
@@ -897,6 +976,7 @@ function spawnEnemyFlame(p) {
 }
 
 function hurtPlayer(dmg) {
+  dmg *= (DIFFICULTY_DEFS[save.difficulty] || DIFFICULTY_DEFS.normal).enemyDmgMult;
   if (player.invuln > 0 || !player.alive) return;
   const shield = player.buffs.shield;
   if (shield && shield.t > 0) {
@@ -976,7 +1056,7 @@ function updatePlayer(dt) {
   }
   if (!isActionDown('dash')) player.dashPressed = false;
   const targetSpeed = CFG.minSpeed + player.throttle * (CFG.maxSpeed - CFG.minSpeed) + (player.afterburn ? CFG.abSpeed : 0);
-  player.speed = lerp(player.speed, targetSpeed, 1 - Math.exp(-dt * (player.afterburn ? 2.2 : 1.4)));
+  player.speed = lerp(player.speed, targetSpeed, 1 - Math.exp(-dt * (player.afterburn ? 2.2 : 1.4) * player.accelMult));
   movePlane(player, dt);
 
   player.rollCd = Math.max(0, player.rollCd - dt);
@@ -1042,7 +1122,7 @@ function firePlayerGuns() {
   if (player.fireCd > 0 || !player.alive) return;
   const w = player.weapon;
   if (!w || w.ammo === 0) return;
-  player.fireCd = w.cd / (1 + (GAME.upgrades.gunRate || 0) + (player.buffs.rate ? 0.5 : 0));
+  player.fireCd = w.cd / (1 + (GAME.upgrades.gunRate || 0) + (player.buffs.rate ? 0.5 : 0)) / player.fireRateMult;
   player.gunSide = -player.gunSide;
   const ox = Math.cos(player.heading), oy = Math.sin(player.heading);
   const px = -oy, py = ox;
@@ -1055,7 +1135,7 @@ function firePlayerGuns() {
   for (const side of offs) {
     const spread = rand(-w.spread, w.spread);
     const a = player.heading + spread;
-    const dmgMult = 1 + (GAME.upgrades.gunDamage || 0) + (player.buffs.damage ? 0.6 : 0);
+    const dmgMult = (1 + (GAME.upgrades.gunDamage || 0) + (player.buffs.damage ? 0.6 : 0)) * player.gunDmgMult;
     bullets.push({
       x: player.x + ox * 36 + px * side,
       y: player.y + oy * 36 + py * side,
@@ -1103,7 +1183,7 @@ function launchMissile(x, y, heading, target, enemySide, dmgBonus) {
   missiles.push({
     x, y, heading, speed: CFG.missileSpeed * (enemySide ? 0.82 : 1),
     turn: enemySide ? 1.9 : CFG.missileTurn, life: CFG.missileLife, target: target,
-    enemy: !!enemySide, trail: 0, r: 5, dmgBonus: dmgBonus || 0
+    enemy: !!enemySide, trail: 0, r: 5, damage: CFG.missileDamage * (enemySide ? 1 : player.gunDmgMult), dmgBonus: dmgBonus || 0
   });
 }
 
@@ -1205,7 +1285,7 @@ function updateMissiles(dt) {
         for (const e of enemies) {
           if (e.dead) continue;
           const d = dist(m.x, m.y, e.x, e.y);
-          if (d < CFG.missileBlast + e.r) damagePlane(e, CFG.missileDamage * (1 + (m.dmgBonus || 0)));
+          if (d < CFG.missileBlast + e.r) damagePlane(e, m.damage * (1 + (m.dmgBonus || 0)));
         }
       } else {
         const targets = [player, ...allies];
@@ -1213,8 +1293,8 @@ function updateMissiles(dt) {
           if (t.dead || !t.alive) continue;
           const d = dist(m.x, m.y, t.x, t.y);
           if (d < CFG.missileBlast + t.r) {
-            if (t === player) hurtPlayer(CFG.missileDamage * 0.8);
-            else damagePlane(t, CFG.missileDamage);
+            if (t === player) hurtPlayer(m.damage * 0.8);
+            else damagePlane(t, m.damage);
           }
         }
       }
@@ -1507,7 +1587,7 @@ function applyBuff(id) {
 function updateBuffs(dt) {
   for (const id of Object.keys(player.buffs)) {
     const b = player.buffs[id];
-    b.t -= dt;
+    b.t -= dt * (player.buffCdMult || 1);
     if (b.t <= 0) delete player.buffs[id];
   }
 }
@@ -1723,8 +1803,7 @@ function startMission(index, mode) {
   player.lastDirTap = { dir: null, t: -99 };
   player.dashActive = false; player.dashT = 0; player.dashCd = 0; player.dashPressed = false;
   player.weapon = defaultWeapon();
-  player.maxHp = 100; player.hp = 100;
-  player.maxMissiles = 48;
+  applyPlaneSetup();
   GAME.exp = 0; GAME.level = 1; GAME.combo = 0; GAME.comboTimer = 0;
   GAME.upgrades = {}; GAME.weapons = []; GAME.dash = null; GAME.synth = {}; upgradeChoice = null;
   player.buffs = {};
@@ -1765,8 +1844,7 @@ function startEndless() {
   player.lastDirTap = { dir: null, t: -99 };
   player.dashActive = false; player.dashT = 0; player.dashCd = 0; player.dashPressed = false;
   player.weapon = defaultWeapon();
-  player.maxHp = 100; player.hp = 100;
-  player.maxMissiles = 48;
+  applyPlaneSetup();
   GAME.exp = 0; GAME.level = 1; GAME.combo = 0; GAME.comboTimer = 0;
   GAME.upgrades = {}; GAME.weapons = []; GAME.dash = null; GAME.synth = {}; upgradeChoice = null;
   player.buffs = {};
@@ -1871,6 +1949,10 @@ function finishMission(success) {
       timeBonus = Math.max(0, Math.round((def.timeBonus || 300) - GAME.missionTime * 2.2));
     }
     GAME.score += timeBonus;
+    if (!mission.endless) {
+      const scoreMult = (DIFFICULTY_DEFS[save.difficulty] || DIFFICULTY_DEFS.normal).scoreMult;
+      GAME.score = Math.round(GAME.score * scoreMult);
+    }
     const acc = GAME.shotsFired > 0 ? GAME.shotsHit / GAME.shotsFired : 0;
     let rank = 'C';
     const dmgRatio = GAME.damageTaken / 100;
@@ -1901,6 +1983,26 @@ function finishMission(success) {
       missionName: mission.def.name,
       code: mission.def.code
     };
+  }
+  if (mission.endless) {
+    save.bestKills = Math.max(save.bestKills, GAME.kills);
+    save.totalKills += GAME.kills;
+    save.totalScore += GAME.score;
+    saveNow();
+  } else if (success) {
+    const idx = GAME.missionIndex;
+    save.unlockedMissions = Math.max(save.unlockedMissions, Math.min(idx + 2, MISSION_DEFS.length));
+    const ch = [2, 5, 8].indexOf(idx);
+    if (ch >= 0) save.chapterCleared = Math.max(save.chapterCleared, ch + 1);
+    save.missionsCleared++;
+    save.totalKills += GAME.kills;
+    save.totalScore += GAME.score;
+    save.bestScore[idx] = Math.max(save.bestScore[idx] || 0, GAME.score);
+    saveNow();
+  } else if (GAME.kills > 0 || GAME.score > 0) {
+    save.totalKills += GAME.kills;
+    save.totalScore += GAME.score;
+    saveNow();
   }
   if (success) {
     setState(mission.endless ? 'gameover' : 'complete');
