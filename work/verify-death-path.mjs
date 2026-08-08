@@ -139,6 +139,61 @@ async function main() {
   })()`);
   check('密集交战中死亡→复活→200帧稳定', s4.ok === true && s4.alive === true && s4.state === 'playing', JSON.stringify(s4));
 
+  // 场景 6:敌我子弹混排时玩家被敌弹打死(v1.2.1 遗漏的崩溃场景)
+  const s6 = await evalJs(`(() => {
+    startMission(0, 'campaign');
+    ChapterCard.skip();
+    player.hp = 5; player.invuln = 0;
+    // 混排:[敌,己,敌,己,...] 交替,玩家子弹位置远离,敌弹一颗在玩家身上
+    for (let i = 0; i < 20; i++) {
+      const enemy = (i % 2 === 0);
+      bullets.push({
+        x: enemy ? (i === 4 ? player.x : rand(200, 3000)) : rand(100, 2000),
+        y: enemy ? (i === 4 ? player.y : rand(200, 3000)) : rand(100, 2000),
+        vx: 0, vy: 0, life: 1, r: 4,
+        dmg: enemy ? 100 : 7, enemy: enemy, fromPlayer: !enemy, hitCount: 0
+      });
+    }
+    try {
+      updateBullets(0.016);  // 第 4 个元素(敌弹)命中玩家 → 死亡 → 复活(标记清弹)
+      // 残留敌弹(已过本次处理点)必须全部被标记失效,下一帧自然清除
+      const leftover = bullets.filter(b => b.enemy);
+      const allMarked = leftover.length === 0 || leftover.every(b => b.life <= 0);
+      for (let i = 0; i < 120; i++) update(0.016);
+      return { ok: true, alive: player.alive, allMarked, enemyLeft: bullets.filter(b => b.enemy).length, total: bullets.length };
+    } catch (e) {
+      return { ok: false, err: String(e) };
+    }
+  })()`);
+  check('混排子弹中死亡→复活→120帧无异常', s6.ok === true && s6.alive === true, JSON.stringify(s6));
+  check('混排后敌方子弹全清(标记失效)', s6.allMarked === true, JSON.stringify({ allMarked: s6.allMarked, enemyLeft: s6.enemyLeft }));
+
+  // 场景 7:混排导弹(敌我交错)玩家被敌导弹炸死
+  const s7 = await evalJs(`(() => {
+    startMission(0, 'campaign');
+    ChapterCard.skip();
+    player.hp = 5; player.invuln = 0;
+    for (let i = 0; i < 12; i++) {
+      const enemy = (i % 2 === 0);
+      missiles.push({
+        x: enemy ? (i === 2 ? player.x : rand(200, 3000)) : rand(100, 2000),
+        y: enemy ? (i === 2 ? player.y : rand(200, 3000)) : rand(100, 2000),
+        heading: 0, speed: 0, turn: 0, life: 1,
+        target: enemy ? player : (enemies[0] || null), enemy: enemy, trail: 0,
+        r: 5, damage: 100, dmgBonus: 0
+      });
+    }
+    try {
+      updateMissiles(0.016);  // 敌导弹命中玩家 → 死亡 → 复活
+      for (let i = 0; i < 120; i++) update(0.016);
+      return { ok: true, alive: player.alive, enemyLeft: missiles.filter(m => m.enemy).length, total: missiles.length };
+    } catch (e) {
+      return { ok: false, err: String(e) };
+    }
+  })()`);
+  check('混排导弹中死亡→复活→120帧无异常', s7.ok === true && s7.alive === true, JSON.stringify(s7));
+  check('混排后敌方导弹全清', s7.enemyLeft === 0, 'left=' + s7.enemyLeft);
+
   // 场景 5:真实时间流逝验证(页面 loop 活着)
   const t0 = await evalJs(`gameTime`);
   await sleep(1200);
