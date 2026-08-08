@@ -325,6 +325,13 @@ const AudioSys = {
     if (this.master) this.master.gain.value = this.enabled ? 0.6 : 0;
     return this.enabled;
   },
+  _throttle: {},
+  throttled(name, ms, fn) {
+    const now = performance.now();
+    if (now - (this._throttle[name] || 0) < ms) return;
+    this._throttle[name] = now;
+    fn();
+  },
   tone(freq, dur, type, vol, slide, when) {
     if (!this.ctx || !this.enabled) return;
     const t = this.ctx.currentTime + (when || 0);
@@ -358,13 +365,15 @@ const AudioSys = {
     src.connect(f); f.connect(g); g.connect(this.master);
     src.start(t);
   },
-  gun() { this.noise(0.07, 0.10, 2300, 0.8, 700); },
+  gun() { this.throttled('gun', 30, () => this.noise(0.07, 0.10, 2300, 0.8, 700)); },
   missileLaunch() { this.noise(0.5, 0.18, 900, 0.7, 2600); this.tone(220, 0.35, 'sawtooth', 0.05, 420); },
   explosion(big) {
-    this.noise(big ? 1.1 : 0.55, big ? 0.5 : 0.32, big ? 260 : 420, 0.6, 60);
-    this.tone(big ? 70 : 110, big ? 0.8 : 0.4, 'sine', big ? 0.5 : 0.3, -45);
+    this.throttled('explosion', 60, () => {
+      this.noise(big ? 1.1 : 0.55, big ? 0.5 : 0.32, big ? 260 : 420, 0.6, 60);
+      this.tone(big ? 70 : 110, big ? 0.8 : 0.4, 'sine', big ? 0.5 : 0.3, -45);
+    });
   },
-  hit() { this.tone(900, 0.06, 'square', 0.08, -300); },
+  hit() { this.throttled('hit', 30, () => this.tone(900, 0.06, 'square', 0.08, -300)); },
   lockBeep() { this.tone(1250, 0.07, 'square', 0.07); },
   warning() { this.tone(980, 0.16, 'sawtooth', 0.10, 120); this.tone(740, 0.16, 'sawtooth', 0.08, -80, 0.14); },
   pickup() { this.tone(660, 0.12, 'sine', 0.16, 0); this.tone(990, 0.18, 'sine', 0.14, 0, 0.08); },
@@ -2105,7 +2114,10 @@ function spawnAce() {
 
 // ---------- particles ----------
 function addParticle(p) {
-  if (particles.length > 700) particles.splice(0, particles.length - 700);
+  if (particles.length >= 720) {
+    // 超限时整批丢弃最旧的一半(摊还 O(1),避免每 push 一次就 splice 头部)
+    particles.splice(0, particles.length - 360);
+  }
   particles.push(p);
 }
 
@@ -2641,6 +2653,8 @@ function updateBullets(dt) {
       if (b.fromPlayer) {
         for (const e of enemies) {
           if (e.dead) continue;
+          const bdx = b.x - e.x, bdy = b.y - e.y;
+          if (bdx * bdx + bdy * bdy > 14400) continue; // 粗剪枝:>120px 跳过精确检测
           if (dist2(b.x, b.y, e.x, e.y) < (e.r + 8) * (e.r + 8)) {
             damagePlane(e, b.dmg);
             if (b.blast) {
@@ -2689,7 +2703,7 @@ function updateMissiles(dt) {
     m.life -= dt;
     m.trail -= dt;
     if (m.trail <= 0) {
-      m.trail = 0.035;
+      m.trail = 0.05;
       addParticle({
         x: m.x - Math.cos(m.heading) * 6, y: m.y - Math.sin(m.heading) * 6,
         vx: rand(-8, 8), vy: rand(-8, 8), life: rand(0.35, 0.6), maxLife: 0.6,
@@ -4768,11 +4782,11 @@ function drawWater(theme) {
   ctx.fillRect(0, 0, W, H);
   ctx.strokeStyle = theme.wave;
   ctx.lineWidth = 1;
-  const step = 46;
+  const step = 56;
   for (let y = -40; y < H + 60; y += step) {
     const wy = y + gameTime * 8 % step;
     ctx.beginPath();
-    for (let x = 0; x <= W; x += 24) {
+    for (let x = 0; x <= W; x += 28) {
       const yy = wy + Math.sin(x * 0.012 + gameTime * 1.4 + wy) * 4;
       if (x === 0) ctx.moveTo(x, yy); else ctx.lineTo(x, yy);
     }
@@ -5213,12 +5227,9 @@ function drawParticles() {
   for (const p of particles) {
     const lifeRatio = p.life / p.maxLife;
     if (p.type === 'fire') {
-      const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.size);
-      g.addColorStop(0, p.color);
-      g.addColorStop(1, 'rgba(255,120,20,0)');
       ctx.globalCompositeOperation = 'lighter';
-      ctx.globalAlpha = lifeRatio;
-      ctx.fillStyle = g;
+      ctx.globalAlpha = lifeRatio * 0.85;
+      ctx.fillStyle = p.color;
       ctx.beginPath();
       ctx.arc(p.x, p.y, p.size, 0, TAU);
       ctx.fill();
@@ -5260,10 +5271,7 @@ function drawParticles() {
       ctx.font = '700 ' + p.size + 'px "Microsoft YaHei", sans-serif';
       ctx.textAlign = 'center';
       ctx.fillStyle = p.color;
-      ctx.shadowColor = 'rgba(0,0,0,0.8)';
-      ctx.shadowBlur = 6;
       ctx.fillText(p.text, p.x, p.y);
-      ctx.shadowBlur = 0;
     } else if (p.type === 'debris') {
       ctx.save();
       ctx.translate(p.x, p.y);
@@ -5304,7 +5312,10 @@ function updateParticles(dt) {
       p.vy *= 1 - dt * 0.35;
     }
     p.life -= dt;
-    if (p.life <= 0) particles.splice(i, 1);
+    if (p.life <= 0) {
+      particles[i] = particles[particles.length - 1];
+      particles.pop();
+    }
   }
 }
 
@@ -5397,8 +5408,7 @@ function drawWorld() {
   for (const e of enemies) {
     ctx.save();
     if (e.dead) {
-      ctx.globalAlpha = e.wreckDone ? Math.max(0, 1 - e.wreckFade) : 0.96;
-      ctx.filter = e.wreckDone ? 'grayscale(0.85) brightness(0.55)' : 'grayscale(0.4) brightness(0.8)';
+      ctx.globalAlpha = e.wreckDone ? Math.max(0, 1 - e.wreckFade) : 0.9;
     }
     if (e.dead) drawWreckShape(e);
     else drawPlaneShape(e);
