@@ -2015,7 +2015,7 @@ function finishMission(success) {
 function setState(s) {
   GAME.state = s;
   menuButtons = [];
-  if (s === 'title' || s === 'briefing' || s === 'complete' || s === 'gameover' || s === 'paused' || s === 'settings') {
+  if (s === 'title' || s === 'briefing' || s === 'complete' || s === 'gameover' || s === 'paused' || s === 'settings' || s === 'hangar') {
     buildMenuButtons(s);
   }
 }
@@ -2026,18 +2026,21 @@ function buildMenuButtons(state) {
   const bh = 54;
   let top = 0;
   if (state === 'title') {
-    menuButtons = [
-      { x: cx - bw / 2, y: H * 0.60, w: bw, h: bh, label: '战役模式', action: () => { AudioSys.click(); GAME.mode = 'campaign'; startTransition(() => { GAME.missionIndex = 0; setState('briefing'); }); }, primary: true },
-      { x: cx - bw / 2, y: H * 0.60 + bh + 14, w: bw, h: bh, label: '自由出击', action: () => { AudioSys.click(); GAME.mode = 'endless'; startTransition(() => startEndless()); } },
-      { x: cx - bw / 2, y: H * 0.60 + (bh + 14) * 2, w: bw, h: bh, label: '按键设置', action: () => { AudioSys.click(); settingsReturn = 'title'; setState('settings'); } }
+    const btnTop = H * 0.60;
+    const titleItems = [
+      { label: '战役模式', primary: true, action: () => { AudioSys.click(); GAME.mode = 'campaign'; startTransition(() => { GAME.missionIndex = 0; setState('briefing'); }); } },
+      { label: '自由出击', primary: false, action: () => { AudioSys.click(); GAME.mode = 'endless'; startTransition(() => startEndless()); } },
+      { label: '机库', primary: false, action: () => { AudioSys.click(); setState('hangar'); } },
+      { label: '按键设置', primary: false, action: () => { AudioSys.click(); settingsReturn = 'title'; setState('settings'); } }
     ];
+    menuButtons = titleItems.map((it, i) => ({ x: cx - bw / 2, y: btnTop + (bh + 14) * i, w: bw, h: bh, label: it.label, action: it.action, primary: it.primary }));
   } else if (state === 'briefing') {
     menuButtons = [
       { x: cx - bw / 2, y: H * 0.72, w: bw, h: bh, label: '出击', action: () => { AudioSys.click(); startTransition(() => startMission(GAME.missionIndex, GAME.mode)); }, primary: true },
       { x: cx - bw / 2, y: H * 0.72 + bh + 14, w: bw, h: bh, label: '返回标题', action: () => { AudioSys.click(); startTransition(() => { GAME.mode = 'campaign'; setState('title'); }); } }
     ];
   } else if (state === 'complete') {
-    const isLast = GAME.missionIndex >= MISSION_DEFS.length - 1;
+    const isLast = GAME.missionIndex >= Math.min(save.unlockedMissions, MISSION_DEFS.length) - 1;
     if (isLast) {
       menuButtons = [
         { x: cx - bw / 2, y: H * 0.78, w: bw, h: bh, label: '自由出击', action: () => { AudioSys.click(); startTransition(() => startEndless()); }, primary: true },
@@ -2045,7 +2048,7 @@ function buildMenuButtons(state) {
       ];
     } else {
       menuButtons = [
-        { x: cx - bw / 2, y: H * 0.78, w: bw, h: bh, label: '下一任务', action: () => { AudioSys.click(); startTransition(() => { GAME.missionIndex++; setState('briefing'); }); }, primary: true },
+        { x: cx - bw / 2, y: H * 0.78, w: bw, h: bh, label: '下一任务 (解锁进度 ' + save.unlockedMissions + '/' + MISSION_DEFS.length + ')', action: () => { AudioSys.click(); startTransition(() => { GAME.missionIndex++; setState('briefing'); }); }, primary: true },
         { x: cx - bw / 2, y: H * 0.78 + bh + 14, w: bw, h: bh, label: '返回标题', action: () => { AudioSys.click(); startTransition(() => { setState('title'); }); } }
       ];
     }
@@ -2066,6 +2069,10 @@ function buildMenuButtons(state) {
     menuButtons = [
       { x: cx - bw / 2, y: H * 0.88, w: bw * 0.48, h: bh, label: '恢复默认', action: () => { AudioSys.click(); keybinds = Object.assign({}, DEFAULT_BINDS); saveKeybinds(); }, primary: false },
       { x: cx + 18, y: H * 0.88, w: bw * 0.48 - 18, h: bh, label: '返回', action: () => { AudioSys.click(); setState(settingsReturn || 'title'); } }
+    ];
+  } else if (state === 'hangar') {
+    menuButtons = [
+      { x: cx - bw / 2, y: H * 0.86, w: bw, h: bh, label: '返回', action: () => { AudioSys.click(); setState('title'); } }
     ];
   }
   top = 0;
@@ -2171,6 +2178,38 @@ function handleCanvasPress(x, y) {
     return false;
   }
   if (GAME.state === 'playing') return false;
+  if (GAME.state === 'hangar') {
+    const L = hangarLayout();
+    const ids = Object.keys(PLANE_DEFS);
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      const cx0 = L.cardsX + i * (L.cardW + L.gap);
+      if (x >= cx0 && x <= cx0 + L.cardW && y >= L.cardsY && y <= L.cardsY + L.cardH) {
+        if (isPlaneUnlocked(id)) {
+          if (save.selectedPlane !== id) { save.selectedPlane = id; saveNow(); }
+          AudioSys.click();
+        } else {
+          addToast('通关第二章解锁', '#ff9f43', 16);
+        }
+        return true;
+      }
+    }
+    const diffKeys = Object.keys(DIFFICULTY_DEFS);
+    const diffTotal = diffKeys.length * L.diffW + (diffKeys.length - 1) * L.diffGap;
+    let dx = W / 2 - diffTotal / 2;
+    for (const key of diffKeys) {
+      if (x >= dx && x <= dx + L.diffW && y >= L.diffY && y <= L.diffY + L.diffH) {
+        if (isDifficultyUnlocked(key)) {
+          if (save.difficulty !== key) { save.difficulty = key; saveNow(); }
+          AudioSys.click();
+        } else {
+          addToast('通关任意一章解锁', '#ff9f43', 16);
+        }
+        return true;
+      }
+      dx += L.diffW + L.diffGap;
+    }
+  }
   for (const b of menuButtons) {
     if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
       b.action();
@@ -3220,6 +3259,174 @@ function drawMenuButton(b, hover) {
   ctx.restore();
 }
 
+function hangarLayout() {
+  const cardW = Math.min(200, Math.max(140, W * 0.16));
+  const cardH = Math.min(216, H * 0.24);
+  const gap = Math.min(20, (W - cardW * 4) / 5);
+  const cardsY = H * 0.17;
+  const cardsX = W / 2 - (cardW * 4 + gap * 3) / 2;
+  const diffW = Math.min(150, W * 0.14);
+  const diffH = 46;
+  const diffGap = 26;
+  const diffY = H * 0.60;
+  const statW = Math.min(330, W * 0.24);
+  const statH = Math.min(168, H * 0.19);
+  const statX = 46;
+  const statY = H * 0.72;
+  return { cardW, cardH, gap, cardsY, cardsX, diffW, diffH, diffGap, diffY, statW, statH, statX, statY };
+}
+
+function hangarPct(v) {
+  const p = Math.round((v - 1) * 100);
+  return p > 0 ? '+' + p + '%' : (p < 0 ? p + '%' : '0%');
+}
+
+function wrapText(text, maxW, maxLines) {
+  const words = String(text).split(/\s+/);
+  const lines = [];
+  let cur = '';
+  for (const w of words) {
+    const t = cur ? cur + ' ' + w : w;
+    if (cur && ctx.measureText(t).width > maxW) {
+      lines.push(cur);
+      cur = w;
+      if (lines.length >= maxLines) return lines;
+    } else {
+      cur = t;
+    }
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+
+function drawHangar() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#0a2540');
+  g.addColorStop(1, '#0d3a4d');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd166';
+  ctx.shadowColor = 'rgba(255,150,40,0.5)';
+  ctx.shadowBlur = 18;
+  ctx.font = '900 ' + Math.round(Math.min(34, W * 0.045)) + 'px "Microsoft YaHei", sans-serif';
+  ctx.fillText('机库 · 出击准备', W / 2, H * 0.08);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#aebecd';
+  ctx.font = '500 ' + Math.round(Math.min(13, W * 0.018)) + 'px "Microsoft YaHei", sans-serif';
+  ctx.fillText('选择机体与难度，调整出击配置', W / 2, H * 0.08 + 28);
+
+  const L = hangarLayout();
+  const ids = Object.keys(PLANE_DEFS);
+  const nameFont = Math.round(Math.min(20, L.cardW * 0.1));
+  const smallFont = Math.round(Math.min(12, L.cardW * 0.065));
+  for (let i = 0; i < ids.length; i++) {
+    const id = ids[i];
+    const def = PLANE_DEFS[id];
+    const x = L.cardsX + i * (L.cardW + L.gap);
+    const locked = !isPlaneUnlocked(id);
+    const selected = save.selectedPlane === id;
+    ctx.fillStyle = locked ? 'rgba(9,16,26,0.78)' : (selected ? 'rgba(24,46,66,0.95)' : 'rgba(14,32,52,0.9)');
+    ctx.strokeStyle = selected ? '#ffd166' : (locked ? 'rgba(120,140,160,0.35)' : 'rgba(140,180,210,0.5)');
+    ctx.lineWidth = selected ? 2.5 : 1.2;
+    roundRect(x, L.cardsY, L.cardW, L.cardH, 12);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = selected ? '#ffd166' : (locked ? 'rgba(170,185,200,0.6)' : '#ffffff');
+    ctx.font = '800 ' + nameFont + 'px "Microsoft YaHei", sans-serif';
+    ctx.fillText(def.name, x + L.cardW / 2, L.cardsY + 40);
+    ctx.fillStyle = locked ? 'rgba(80,95,110,0.7)' : 'rgba(70,150,200,0.35)';
+    ctx.strokeStyle = locked ? 'rgba(120,140,160,0.3)' : 'rgba(127,212,255,0.6)';
+    ctx.lineWidth = 1;
+    const tagW = Math.min(84, L.cardW - 24);
+    roundRect(x + L.cardW / 2 - tagW / 2, L.cardsY + 52, tagW, 22, 11);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = locked ? 'rgba(150,165,180,0.55)' : '#7fd4ff';
+    ctx.font = '600 ' + smallFont + 'px "Microsoft YaHei", sans-serif';
+    ctx.fillText(def.tag, x + L.cardW / 2, L.cardsY + 52 + 15);
+    ctx.fillStyle = locked ? 'rgba(150,165,180,0.5)' : '#c8d8e4';
+    ctx.font = '500 ' + smallFont + 'px "Microsoft YaHei", sans-serif';
+    const dl = wrapText(def.desc, L.cardW - 26, 2);
+    for (let li = 0; li < dl.length; li++) {
+      ctx.fillText(dl[li], x + L.cardW / 2, L.cardsY + 96 + li * 22);
+    }
+    if (locked) {
+      ctx.fillStyle = 'rgba(255,143,107,0.85)';
+      ctx.font = '600 ' + smallFont + 'px "Microsoft YaHei", sans-serif';
+      ctx.fillText('通关第二章解锁', x + L.cardW / 2, L.cardsY + L.cardH - 24);
+    } else {
+      ctx.fillStyle = 'rgba(125,255,176,0.85)';
+      ctx.font = '600 ' + smallFont + 'px "Microsoft YaHei", sans-serif';
+      ctx.fillText('初始可用', x + L.cardW / 2, L.cardsY + L.cardH - 24);
+    }
+  }
+
+  // 难度行
+  ctx.fillStyle = '#dfe9f2';
+  ctx.font = '700 ' + Math.round(Math.min(15, W * 0.02)) + 'px "Microsoft YaHei", sans-serif';
+  ctx.fillText('难度', W / 2, L.diffY - 30);
+  const diffKeys = Object.keys(DIFFICULTY_DEFS);
+  const diffTotal = diffKeys.length * L.diffW + (diffKeys.length - 1) * L.diffGap;
+  let dx = W / 2 - diffTotal / 2;
+  for (const key of diffKeys) {
+    const def = DIFFICULTY_DEFS[key];
+    const locked = !isDifficultyUnlocked(key);
+    const selected = save.difficulty === key;
+    ctx.fillStyle = locked ? 'rgba(12,20,30,0.8)' : (selected ? 'rgba(255,170,60,0.95)' : 'rgba(16,32,50,0.88)');
+    ctx.strokeStyle = selected ? '#ffe1a0' : (locked ? 'rgba(120,140,160,0.35)' : 'rgba(140,180,210,0.6)');
+    ctx.lineWidth = selected ? 2 : 1.2;
+    roundRect(dx, L.diffY, L.diffW, L.diffH, 8);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = locked ? 'rgba(150,165,180,0.55)' : (selected ? '#20242c' : '#eaf2f8');
+    ctx.font = '700 ' + Math.round(Math.min(17, L.diffH * 0.4)) + 'px "Microsoft YaHei", sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(def.name, dx + L.diffW / 2, L.diffY + L.diffH / 2);
+    ctx.textBaseline = 'alphabetic';
+    if (locked) {
+      ctx.fillStyle = 'rgba(170,185,200,0.6)';
+      ctx.font = '500 ' + Math.round(Math.min(11, W * 0.015)) + 'px "Microsoft YaHei", sans-serif';
+      ctx.fillText('通关任意一章解锁', dx + L.diffW / 2, L.diffY + L.diffH + 18);
+    }
+    dx += L.diffW + L.diffGap;
+  }
+
+  // 左下角：选中机体数值对比（以「疾风」为基准）
+  const sdef = PLANE_DEFS[save.selectedPlane];
+  ctx.fillStyle = 'rgba(10,24,40,0.92)';
+  ctx.strokeStyle = 'rgba(120,190,230,0.4)';
+  ctx.lineWidth = 1.5;
+  roundRect(L.statX, L.statY, L.statW, L.statH, 10);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#ffd166';
+  ctx.font = '700 ' + Math.round(Math.min(14, L.statW * 0.045)) + 'px "Microsoft YaHei", sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('机体属性 · ' + sdef.name, L.statX + 16, L.statY + 28);
+  const rows = [
+    ['血量', hangarPct(sdef.hpMult), sdef.hpMult - 1],
+    ['机炮', hangarPct(sdef.gunDmgMult), sdef.gunDmgMult - 1],
+    ['射速', hangarPct(sdef.fireRateMult), sdef.fireRateMult - 1],
+    ['机动', hangarPct((sdef.turnMult + sdef.accelMult) / 2), (sdef.turnMult + sdef.accelMult) / 2 - 1],
+    ['导弹', (sdef.missileBonus > 0 ? '+' : '') + sdef.missileBonus, sdef.missileBonus]
+  ];
+  let ry = L.statY + 56;
+  ctx.font = '500 ' + Math.round(Math.min(12.5, L.statW * 0.04)) + 'px "Microsoft YaHei", sans-serif';
+  for (const r of rows) {
+    ctx.fillStyle = '#aebecd';
+    ctx.textAlign = 'left';
+    ctx.fillText(r[0], L.statX + 16, ry);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = r[2] > 0 ? '#7dffb0' : (r[2] < 0 ? '#ff8f8f' : '#aebecd');
+    ctx.fillText(r[1], L.statX + L.statW - 16, ry);
+    ry += 24;
+  }
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(170,200,215,0.55)';
+  ctx.font = '500 ' + Math.round(Math.min(11, W * 0.015)) + 'px "Microsoft YaHei", sans-serif';
+  ctx.fillText('以「疾风」为基准', L.statX + L.statW / 2, L.statY + L.statH - 12);
+
+  const hovered = hoverButton();
+  for (const b of menuButtons) drawMenuButton(b, b === hovered);
+}
+
 function drawTitle() {
   const g = ctx.createLinearGradient(0, 0, 0, H);
   g.addColorStop(0, '#0a2540');
@@ -3260,18 +3467,22 @@ function drawTitle() {
   const hovered = hoverButton();
   for (const b of menuButtons) drawMenuButton(b, b === hovered);
 
+  let hintY = H * 0.78;
+  for (const b of menuButtons) hintY = Math.max(hintY, b.y + b.h);
+  hintY += 26;
   ctx.fillStyle = 'rgba(210,230,240,0.75)';
   ctx.font = '500 ' + Math.round(Math.min(13, W * 0.018)) + 'px "Microsoft YaHei", sans-serif';
+  ctx.fillText('击坠 ' + save.totalKills + ' · 通关 ' + save.missionsCleared + ' · 无尽最高 ' + save.bestKills, W / 2, hintY);
   const lines = [
     '操作：鼠标瞄准 ｜ ' + prettyKey(bindFor('gun')) + ' 机炮 ｜ ' + prettyKey(bindFor('missile')) + ' 导弹 ｜ ' + prettyKey(bindFor('dash')) + ' 突进 ｜ ' + prettyKey(bindFor('rollLeft')) + '/' + prettyKey(bindFor('rollRight')) + ' 滚筒',
     prettyKey(bindFor('throttleUp')) + '/' + prettyKey(bindFor('throttleDown')) + ' 油门 ｜ ' + prettyKey(bindFor('afterburn')) + ' 加力 ｜ ' + prettyKey(bindFor('pause')) + ' 暂停 ｜ ' + prettyKey(bindFor('mute')) + ' 静音'
   ];
   for (let i = 0; i < lines.length; i++) {
-    ctx.fillText(lines[i], W / 2, H * 0.86 + i * 24);
+    ctx.fillText(lines[i], W / 2, hintY + 24 + i * 24);
   }
   ctx.fillStyle = 'rgba(170,200,215,0.55)';
   ctx.font = '500 ' + Math.round(Math.min(12, W * 0.017)) + 'px "Microsoft YaHei", sans-serif';
-  ctx.fillText('点击任意位置开始', W / 2, H * 0.86 + 64);
+  ctx.fillText('点击任意位置开始', W / 2, hintY + 24 + lines.length * 24 + 16);
 }
 
 function drawBriefing() {
@@ -3317,6 +3528,8 @@ function drawBriefing() {
   y += 34;
   ctx.fillStyle = '#aebecd';
   ctx.font = '500 ' + Math.round(Math.min(14, W * 0.019)) + 'px "Microsoft YaHei", sans-serif';
+  ctx.fillText('机体：' + PLANE_DEFS[save.selectedPlane].name + ' ｜ 难度：' + DIFFICULTY_DEFS[save.difficulty].name, W / 2, y);
+  y += 26;
   ctx.fillText('载弹：机炮 无限 ｜ 导弹 ×' + player.maxMissiles, W / 2, y);
   y += 26;
   ctx.fillText('空域：' + THEMES[def.theme].name, W / 2, y);
@@ -3547,7 +3760,7 @@ function update(dt) {
     }
   } else if (GAME.state === 'paused') {
     // keep world visible but frozen
-  } else if (GAME.state === 'title' || GAME.state === 'briefing' || GAME.state === 'complete' || GAME.state === 'gameover') {
+  } else if (GAME.state === 'title' || GAME.state === 'briefing' || GAME.state === 'complete' || GAME.state === 'gameover' || GAME.state === 'hangar') {
     updateParticles(dt);
   }
   if (GAME.pendingTimer > 0) {
@@ -3581,6 +3794,8 @@ function draw() {
     drawGameOver();
   } else if (GAME.state === 'settings') {
     drawSettings();
+  } else if (GAME.state === 'hangar') {
+    drawHangar();
   }
   if (GAME.state === 'playing' && upgradeChoice) drawUpgradeChoice();
   drawTransition();
