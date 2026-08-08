@@ -5353,6 +5353,7 @@ function updateParticles(dt) {
 
 function drawBullets() {
   for (const b of bullets) {
+    if (b.life <= 0) continue; // 已失效(复活清弹标记)不再绘制,下帧由 updateBullets 清除
     ctx.strokeStyle = b.fromPlayer ? '#ffe9a0' : '#ff6b5e';
     ctx.lineWidth = 3;
     ctx.globalCompositeOperation = 'lighter';
@@ -5366,6 +5367,7 @@ function drawBullets() {
 
 function drawMissiles() {
   for (const m of missiles) {
+    if (m.life <= 0) continue; // 已失效(复活清弹标记)不再绘制
     const dirx = Math.cos(m.heading), diry = Math.sin(m.heading);
     ctx.save();
     ctx.translate(m.x, m.y);

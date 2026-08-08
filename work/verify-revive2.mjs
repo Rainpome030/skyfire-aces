@@ -113,9 +113,9 @@ async function main() {
     missiles.push({ enemy: true, x: 0, y: 0 });
     bullets.push({ enemy: false, x: 0, y: 0 });
     killPlane(player);
-    return { hp: player.hp, maxHp: player.maxHp, invuln: player.invuln, enemyBullets: bullets.filter(b => b.enemy).length, myBullets: bullets.filter(b => !b.enemy).length, enemyMsl: missiles.filter(m => m.enemy).length };
+    return { hp: player.hp, maxHp: player.maxHp, invuln: player.invuln, enemyBullets: bullets.filter(b => b.enemy && b.life > 0).length, myBullets: bullets.filter(b => !b.enemy).length, enemyMsl: missiles.filter(m => m.enemy && m.life > 0).length };
   })()`);
-  check('复活:60%血+动画期无敌(1.2s)+清敌弹留己弹', c2.hp === Math.round(c2.maxHp * 0.6) && c2.invuln === 1.2 && c2.enemyBullets === 0 && c2.myBullets === 1 && c2.enemyMsl === 0, JSON.stringify(c2));
+  check('复活:60%血+动画期无敌(1.2s)+敌弹全部标记失效(视觉立即消失)', c2.hp === Math.round(c2.maxHp * 0.6) && c2.invuln === 1.2 && c2.enemyBullets === 0 && c2.myBullets === 1 && c2.enemyMsl === 0, JSON.stringify(c2));
   // 动画结束后才开始 3 秒无敌计时
   const c2b = await evalJs(`(() => {
     for (let i = 0; i < 70; i++) updatePlayer(0.016);  // 1.12s > 动画 1.0s
