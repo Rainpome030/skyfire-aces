@@ -2227,7 +2227,7 @@ function killPlane(p) {
   addText(p.x, p.y - 24, '+' + gainedPts, '#ffd166', 17);
   AudioSys.score();
   if (p.kind !== 'transport' && GAME.mode === 'endless') {
-    const gained = Math.round((p.exp || 100) * expMultiplier() * (1 + (GAME.upgrades.expGain || 0)));
+    const gained = Math.round((p.exp || 100) * expMultiplier());
     addExp(gained);
     registerKillCombo();
   }
@@ -2313,7 +2313,7 @@ function hurtPlayer(dmg) {
     cam.shake = Math.min(10, cam.shake + 3);
     return;
   }
-  const mitigated = dmg * (1 - (GAME.upgrades.armor || 0));
+  const mitigated = dmg;
   damagePlane(player, mitigated);
   player.hitFlash = Math.max(player.hitFlash, 0.3);
   cam.shake = Math.min(24, cam.shake + 8);
@@ -2443,7 +2443,7 @@ function firePlayerGuns() {
   if (player.fireCd > 0 || !player.alive) return;
   const w = player.weapon;
   if (!w || w.ammo === 0) return;
-  player.fireCd = w.cd / (1 + (GAME.upgrades.gunRate || 0) + (player.buffs.rate ? 0.5 : 0)) / player.fireRateMult;
+  player.fireCd = w.cd / (1 + (player.buffs.rate ? 0.5 : 0)) / player.fireRateMult;
   player.gunSide = -player.gunSide;
   const ox = Math.cos(player.heading), oy = Math.sin(player.heading);
   const px = -oy, py = ox;
@@ -2456,7 +2456,7 @@ function firePlayerGuns() {
   for (const side of offs) {
     const spread = rand(-w.spread, w.spread);
     const a = player.heading + spread;
-    const dmgMult = (1 + (GAME.upgrades.gunDamage || 0) + (player.buffs.damage ? 0.6 : 0)) * player.gunDmgMult;
+    const dmgMult = (1 + (player.buffs.damage ? 0.6 : 0)) * player.gunDmgMult;
     bullets.push({
       x: player.x + ox * 36 + px * side,
       y: player.y + oy * 36 + py * side,
@@ -2496,7 +2496,7 @@ function firePlayerMissile() {
   player.missiles--;
   player.missileCd = player.buffs.missile ? 0.28 : 0.55;
   const t = player.target;
-  launchMissile(player.x + Math.cos(player.heading) * 40, player.y + Math.sin(player.heading) * 40, player.heading, t, false, GAME.upgrades.missileDamage || 0);
+  launchMissile(player.x + Math.cos(player.heading) * 40, player.y + Math.sin(player.heading) * 40, player.heading, t, false, 0);
   AudioSys.missileLaunch();
 }
 
@@ -3001,7 +3001,7 @@ function tryDash() {
   player.dashT = 0;
   player.dashDur = d.dur;
   player.dashSpeed = d.speed;
-  player.dashCd = d.cd / (1 + (GAME.upgrades.dashCd || 0));
+  player.dashCd = d.cd;
   player.invuln = Math.max(player.invuln, d.invuln);
   AudioSys.roll();
   addText(player.x, player.y - 58, '突进', '#9be3ff', 16);
