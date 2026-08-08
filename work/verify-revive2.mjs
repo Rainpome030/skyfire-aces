@@ -115,7 +115,13 @@ async function main() {
     killPlane(player);
     return { hp: player.hp, maxHp: player.maxHp, invuln: player.invuln, enemyBullets: bullets.filter(b => b.enemy).length, myBullets: bullets.filter(b => !b.enemy).length, enemyMsl: missiles.filter(m => m.enemy).length };
   })()`);
-  check('复活:60%血+3s无敌+清敌弹留己弹', c2.hp === Math.round(c2.maxHp * 0.6) && c2.invuln === 3 && c2.enemyBullets === 0 && c2.myBullets === 1 && c2.enemyMsl === 0, JSON.stringify(c2));
+  check('复活:60%血+动画期无敌(1.2s)+清敌弹留己弹', c2.hp === Math.round(c2.maxHp * 0.6) && c2.invuln === 1.2 && c2.enemyBullets === 0 && c2.myBullets === 1 && c2.enemyMsl === 0, JSON.stringify(c2));
+  // 动画结束后才开始 3 秒无敌计时
+  const c2b = await evalJs(`(() => {
+    for (let i = 0; i < 70; i++) updatePlayer(0.016);  // 1.12s > 动画 1.0s
+    return { invuln: player.invuln, anim: player.reviveAnim };
+  })()`);
+  check('动画结束后 invuln=3 开始计时', c2b.anim === null && c2b.invuln >= 2.5 && c2b.invuln <= 3.1, JSON.stringify(c2b));
   await evalJs(`ChapterCard.skip();`);  // 清掉 c2 触发的章节过场,避免短路后续 update
 
   // ===== 无尽模式:3 次 =====
