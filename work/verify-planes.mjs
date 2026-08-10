@@ -137,7 +137,7 @@ async function main() {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, W, H);
     drawWorld();
-    const data = ctx.getImageData(Math.round(W / 2) - 40, Math.round(H / 2) - 40, 80, 80).data;
+    const data = ctx.getImageData(Math.round(W / 2) - 40, Math.round(H * 0.62) - 40, 80, 80).data;
     let gold = 0;
     for (let i = 0; i < data.length; i += 4) {
       if (Math.abs(data[i] - 245) < 40 && Math.abs(data[i+1] - 201) < 40 && Math.abs(data[i+2] - 76) < 40) gold++;

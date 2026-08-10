@@ -1,4 +1,7 @@
 // task-15 冒烟:检查点可见标记 + 屏幕边缘指引箭头
+// 任务书 20 同步:追尾相机下旧世界→屏幕映射失效,改用新公式
+//   (dx,dy)*R(-π/2-heading)*zoom + (W/2, H*0.62);箭头射线仍从屏幕中心 (W/2,H/2) 求交
+// 另外 MISSION_DEFS 顺序已变:race 关 = index 7(极速竞逐),护航关用 index 1(铁鸟护航)
 // 参照 work/verify-batch3.mjs 连接样板;端口 9362,profile work/chrome-profile-guide
 import { spawn } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
@@ -88,11 +91,14 @@ function check(name, cond, detail) {
 }
 
 // 进入竞速关并摆好相机/玩家(测试专用;不改任何游戏逻辑)
+// 任务书 20:追尾相机下 cam 硬锁玩家,手动设 cam 仅为求值期一致性
+// (MISSION_DEFS 数组下标:6 = 极速竞逐 race;7 = 方舟护航 escort)
 const SETUP_RACE = `(() => {
   save.chapterCleared = 3; saveNow();
   startMission(6, 'campaign');
   transition.active = false;
   cam.zoom = 1; cam.shake = 0; cam.shakeX = 0; cam.shakeY = 0;
+  cam.x = player.x; cam.y = player.y;
   return mission.def.type + '|' + (mission.def.checkpoints || []).length;
 })()`;
 
@@ -101,6 +107,26 @@ const PIX = `(x, y) => {
   const g = document.querySelector('canvas').getContext('2d');
   const d = g.getImageData(Math.round(x * DPR), Math.round(y * DPR), 1, 1).data;
   return [d[0], d[1], d[2]];
+}`;
+
+// 追尾相机世界→屏幕映射(与 drawOffscreenArrow 内公式一致,任务书 20)
+const CHASE_MAP = `(tx, ty) => {
+  const ang = -Math.PI / 2 - player.heading;
+  const cosA = Math.cos(ang), sinA = Math.sin(ang);
+  const dx = tx - cam.x, dy = ty - cam.y;
+  return {
+    sx: (dx * cosA - dy * sinA) * cam.zoom + W / 2,
+    sy: (dx * sinA + dy * cosA) * cam.zoom + H * 0.62
+  };
+}`;
+
+// 屏幕中心射线与内缩 24px 边缘的求交(与 drawOffscreenArrow 一致)
+const EDGE_HIT = `(sx, sy) => {
+  const cx0 = W / 2, cy0 = H / 2;
+  const a = Math.atan2(sy - cy0, sx - cx0);
+  const hw = W / 2 - 24, hh = H / 2 - 24;
+  const t = Math.min(Math.abs(hw / (Math.cos(a) || 1e-6)), Math.abs(hh / (Math.sin(a) || 1e-6)));
+  return { ex: cx0 + Math.cos(a) * t, ey: cy0 + Math.sin(a) * t };
 }`;
 
 async function main() {
@@ -114,6 +140,7 @@ async function main() {
   check('drawCheckpoints / drawOffscreenArrow 已定义', hook === true);
 
   // ---- 1. 检查点可见标记(相机对准第一个检查点,采样非背景像素) ----
+  // 追尾相机:飞机锁 (W/2, H*0.62);heading=-π/2 → 世界→屏幕恒等旋转,光柱沿屏幕竖直向上
   const r1 = await evalJs(`(() => {
     ${SETUP_RACE};
     const cp = mission.def.checkpoints[0];
@@ -121,16 +148,17 @@ async function main() {
     cam.x = cp.x; cam.y = cp.y;
     const pix = ${PIX};
     const S = (cx, cy) => pix(cx, cy);
+    const ay = H * 0.62;
     // 背景参考:临时隐藏检查点绘制(仅测试钩子,draw 后立即恢复)
     const origType = mission.def.type;
     mission.def.type = 'x';
     draw();
-    const bg = S(W / 2, H / 2);
+    const bg = S(W / 2, ay);
     mission.def.type = origType;
     draw();
-    const fg = S(W / 2, H / 2);            // 光柱底部(检查点位置)
-    const fgMid = S(W / 2, H / 2 - 120);   // 光柱中部
-    const fgTop = S(W / 2, H / 2 - 240);   // 顶部悬浮菱形
+    const fg = S(W / 2, ay);            // 光柱底部(检查点位置=飞机锚点)
+    const fgMid = S(W / 2, ay - 120);   // 光柱中部
+    const fgTop = S(W / 2, ay - 240);   // 顶部悬浮菱形
     const diff = (a, b) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]);
     return { bg, fg, fgMid, fgTop, d1: diff(fg, bg), d2: diff(fgMid, bg), d3: diff(fgTop, bg), cp };
   })()`);
@@ -145,32 +173,33 @@ async function main() {
     player.x = 600; player.y = 1000;
     cam.x = 600; cam.y = 1000;
     mission.raceIndex = 0;
+    const cp = mission.def.checkpoints[0];
+    const m = (${CHASE_MAP})(cp.x, cp.y);   // 追尾映射(任务书 20)
+    const e = (${EDGE_HIT})(m.sx, m.sy);
     draw();
     const g = document.querySelector('canvas').getContext('2d');
-    // 箭头应位于右边缘内侧 24px,垂直居中(指向屏幕外右侧的检查点)
-    const cx0 = W - 24, cy0 = H / 2;
     let gold = 0;
     for (let dy = -6; dy <= 6; dy++) {
       for (let dx = -6; dx <= 6; dx++) {
-        const d = g.getImageData(Math.round((cx0 + dx) * DPR), Math.round((cy0 + dy) * DPR), 1, 1).data;
+        const d = g.getImageData(Math.round((e.ex + dx) * DPR), Math.round((e.ey + dy) * DPR), 1, 1).data;
         if (d[0] >= 250 && d[1] >= 195 && d[2] <= 125) gold++;
       }
     }
-    // 目标在屏幕内时应无箭头:玩家移到检查点附近(视口内)但保持距离>380 防止自动推进
-    player.x = 1500; player.y = 1400;
-    cam.x = 1500; cam.y = 1400;
+    // 目标在屏幕内时应无箭头:玩家移到检查点附近(视口内)
+    player.x = cp.x - 100; player.y = cp.y - 100;
+    cam.x = player.x; cam.y = player.y;
     mission.raceIndex = 0;
     draw();
     let goldIn = 0;
     for (let dy = -6; dy <= 6; dy++) {
       for (let dx = -6; dx <= 6; dx++) {
-        const d = g.getImageData(Math.round((cx0 + dx) * DPR), Math.round((cy0 + dy) * DPR), 1, 1).data;
+        const d = g.getImageData(Math.round((e.ex + dx) * DPR), Math.round((e.ey + dy) * DPR), 1, 1).data;
         if (d[0] >= 250 && d[1] >= 195 && d[2] <= 125) goldIn++;
       }
     }
-    return { gold, goldIn, W, H };
+    return { gold, goldIn, sx: m.sx, sy: m.sy, ex: e.ex, ey: e.ey, W, H, out: !(m.sx >= 0 && m.sx <= W && m.sy >= 0 && m.sy <= H) };
   })()`);
-  check('目标在屏幕外 → 边缘箭头(#ffd166 像素)', r2.gold > 5, 'gold=' + r2.gold);
+  check('目标在屏幕外 → 边缘箭头(#ffd166 像素)', r2.gold > 5 && r2.out, 'gold=' + r2.gold + ' at(' + r2.ex.toFixed(0) + ',' + r2.ey.toFixed(0) + ')');
   check('目标在屏幕内 → 不画箭头', r2.goldIn < 3, 'goldIn=' + r2.goldIn);
   await shot('t15-guide-arrow.png');
 
@@ -178,42 +207,45 @@ async function main() {
   const r3 = await evalJs(`(() => {
     ${SETUP_RACE};
     const cp = mission.def.checkpoints[0];
-    player.x = cp.x; player.y = cp.y + 500;  // 距 cp0 500px,防止 updateRace 自动推进
-    cam.x = cp.x; cam.y = cp.y;
+    player.x = cp.x; player.y = cp.y - 300;  // 玩家在检查点上方 300px(追尾下光柱全部入屏)
+    cam.x = player.x; cam.y = player.y;
     mission.raceIndex = 0;
     draw();
     const g = document.querySelector('canvas').getContext('2d');
+    const ay = H * 0.62;
+    const py = ay + 300;   // 检查点屏幕 y(恒等旋转,世界 +y = 屏幕 +y)
     const sum = () => {
-      const d = g.getImageData(Math.round((W / 2) * DPR), Math.round((H / 2) * DPR), 1, 1).data;
+      const d = g.getImageData(Math.round((W / 2) * DPR), Math.round((py - 120) * DPR), 1, 1).data;
       return d[0] + d[1] + d[2];
     };
     const before = sum();
     mission.raceIndex = 1;   // 通过 cp0 → 光柱变暗绿小标记
     draw();
     const after = sum();
-    return { before, after, drop: before - after };
+    return { before, after, drop: before - after, py };
   })()`);
   check('已通过检查点变暗(亮度下降)', r3.drop > 40, JSON.stringify(r3));
 
   // ---- 4. 护航关:屏幕边缘箭头指向运输机(绿色) ----
   const r4 = await evalJs(`(() => {
     save.chapterCleared = 3; saveNow();
-    startMission(7, 'campaign');
+    startMission(7, 'campaign');   // 方舟护航(单运输机 mission.transport)
     transition.active = false;
     cam.zoom = 1; cam.shake = 0; cam.shakeX = 0; cam.shakeY = 0;
     cam.x = player.x; cam.y = player.y;
+    const tp = mission.transport;
+    const m = (${CHASE_MAP})(tp.x, tp.y);
+    const e = (${EDGE_HIT})(m.sx, m.sy);
     draw();
     const g = document.querySelector('canvas').getContext('2d');
-    const cx0 = 24, cy0 = H / 2;  // 左边缘(运输机在玩家左侧)
     let green = 0;
     for (let dy = -6; dy <= 6; dy++) {
       for (let dx = -6; dx <= 6; dx++) {
-        const d = g.getImageData(Math.round((cx0 + dx) * DPR), Math.round((cy0 + dy) * DPR), 1, 1).data;
+        const d = g.getImageData(Math.round((e.ex + dx) * DPR), Math.round((e.ey + dy) * DPR), 1, 1).data;
         if (d[1] >= 185 && d[0] <= 115 && d[2] <= 150) green++;
       }
     }
-    const tp = mission.transport ? { x: mission.transport.x, y: mission.transport.y, dead: !!mission.transport.dead } : null;
-    return { green, tp };
+    return { green, ex: e.ex, ey: e.ey, sx: m.sx, sy: m.sy, tp: tp ? { x: tp.x, y: tp.y, dead: !!tp.dead } : null };
   })()`);
   check('护航关箭头指向运输机(绿色像素)', r4.green > 3 && r4.tp && !r4.tp.dead, JSON.stringify(r4));
 
