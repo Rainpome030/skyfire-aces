@@ -978,6 +978,7 @@ const player = {
   x: 0, y: 0, heading: 0, speed: 0, bank: 0,
   r: 16,
   hp: 100, maxHp: 100,
+  altitude: 9000,   // 高度系统(任务书 18):速度驱动,上限 9000,归零死亡
   missiles: 40, maxMissiles: 48,
   throttle: 0.68, target: null, lock: 0,
   fireCd: 0, missileCd: 0, invuln: 0, alive: true, dead: false, reviveAnim: null,
@@ -2310,6 +2311,7 @@ function killPlane(p) {
       player.alive = true;
       player.dead = false;
       player.hp = Math.round(player.maxHp * 0.6);
+      player.altitude = 9000;   // 复活重置高度(任务书 18)
       player.invuln = 1.2;   // 动画期无敌(留余量),动画结束后由 updatePlayer 重新计时 3 秒
       player.reviveAnim = { t: 0, dur: 1.0 };
       for (let bi = 0; bi < bullets.length; bi++) if (bullets[bi].enemy) bullets[bi].life = 0;
@@ -2543,6 +2545,13 @@ function updatePlayer(dt) {
   player.missileCd -= dt;
   player.invuln = Math.max(0, player.invuln - dt);
   player.hitFlash = Math.max(0, player.hitFlash - dt);
+  // 高度系统:速度驱动(任务书 18)
+  // speedRatio = player.speed / CFG.maxSpeed(370);rate = (speedRatio - 0.5) * 160 高度/秒
+  // ratio=0.27(怠速95)→ -37/s,ratio=0.5 → 0,ratio=1(370)→ +80/s,ratio=1.3(加力480)→ +128/s
+  // 系数 160 可调;高度为 0 → 直接死亡(走 killPlane 现有流程)
+  const speedRatio = player.speed / CFG.maxSpeed;
+  player.altitude = Math.max(0, Math.min(9000, player.altitude + (speedRatio - 0.5) * 160 * dt));
+  if (player.altitude <= 0) { killPlane(player); return; }
   // 复活动画推进:动画结束后才开始 3 秒无敌计时(动画期间 invuln=1.2 已保证无敌)
   if (player.reviveAnim) {
     player.reviveAnim.t += dt;
@@ -3378,6 +3387,7 @@ function startMission(index, mode) {
   player.hp = player.maxHp;
   player.missiles = player.maxMissiles;
   player.throttle = 0.68;
+  player.altitude = 9000;   // 开局重置高度(任务书 18)
   player.target = null; player.lock = 0;
   player.alive = true; player.dead = false; player.invuln = 1;
   player.rollActive = false; player.rollT = 0; player.rollDir = 0; player.rollCd = 0;
@@ -3426,7 +3436,7 @@ function startEndless() {
   player.x = world.W / 2; player.y = world.H / 2;
   player.heading = -Math.PI / 2; player.speed = 200;
   player.hp = player.maxHp; player.missiles = player.maxMissiles;
-  player.throttle = 0.68; player.target = null; player.lock = 0;
+  player.throttle = 0.68; player.altitude = 9000; player.target = null; player.lock = 0;
   player.alive = true; player.dead = false; player.invuln = 1;
   player.rollActive = false; player.rollT = 0; player.rollDir = 0; player.rollCd = 0;
   player.lastDirTap = { dir: null, t: -99 };
@@ -5871,7 +5881,7 @@ function drawHUD() {
   ctx.font = '600 ' + Math.round(12 * hudScale) + 'px "Microsoft YaHei", sans-serif';
   ctx.fillText('速度 ' + Math.round(player.speed) + ' km/h', blX + 12, blY + 76 * hudScale);
   ctx.textAlign = 'right';
-  ctx.fillText('高度 ' + Math.round(12000 - player.hp * 30) + ' m', blX + 250 * hudScale, blY + 76 * hudScale);
+  ctx.fillText('高度 ' + Math.round(player.altitude) + ' m', blX + 250 * hudScale, blY + 76 * hudScale);
 
   // throttle gauge
   ctx.save();
@@ -6032,6 +6042,21 @@ function drawHUD() {
       ctx.shadowColor = '#ff0000';
       ctx.shadowBlur = 16;
       ctx.fillText('导弹来袭', W / 2, H * 0.3);
+      ctx.shadowBlur = 0;
+    }
+  }
+
+  // 低空警告(任务书 18):高度 < 2000 红闪「高度过低!」,< 600 更急促(阈值 2000/600 可调)
+  if (player.alive && player.altitude < 2000) {
+    const urgent = player.altitude < 600;
+    const flash = Math.sin(gameTime * (urgent ? 26 : 14)) > -0.4;
+    if (flash) {
+      ctx.fillStyle = 'rgba(255,45,45,0.9)';
+      ctx.font = '900 ' + Math.round(26 * hudScale) + 'px "Microsoft YaHei", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.shadowColor = '#ff0000';
+      ctx.shadowBlur = 16;
+      ctx.fillText('高度过低!', W / 2, H * 0.66);
       ctx.shadowBlur = 0;
     }
   }
