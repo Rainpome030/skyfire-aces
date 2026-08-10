@@ -1002,6 +1002,7 @@ let lastTime = performance.now();
 let gameTime = 0;
 let upgradeChoice = null;
 let settingsReturn = 'title';
+let achievementsReturn = 'title';   // 成就界面返回来源:title / hangar(任务书 13)
 
 const SETTINGS_ACTIONS = [
   { action: 'throttleUp', label: '油门加速' },
@@ -4533,7 +4534,7 @@ function finishMission(success) {
 function setState(s) {
   GAME.state = s;
   menuButtons = [];
-  if (s === 'title' || s === 'briefing' || s === 'complete' || s === 'gameover' || s === 'paused' || s === 'settings' || s === 'hangar') {
+  if (s === 'title' || s === 'briefing' || s === 'complete' || s === 'gameover' || s === 'paused' || s === 'settings' || s === 'hangar' || s === 'achievements' || s === 'select') {
     buildMenuButtons(s);
   }
   if (typeof MusicSys !== 'undefined' && MusicSys.play) {
@@ -4549,7 +4550,7 @@ function buildMenuButtons(state) {
   if (state === 'title') {
     const btnTop = H * 0.60;
     const titleItems = [
-      { label: '战役模式', primary: true, action: () => { AudioSys.click(); GAME.mode = 'campaign'; startTransition(() => { GAME.missionIndex = 0; setState('briefing'); }); } },
+      { label: '战役模式', primary: true, action: () => { AudioSys.click(); GAME.mode = 'campaign'; setState('select'); } },
       { label: '自由出击', primary: false, action: () => { AudioSys.click(); GAME.mode = 'endless'; startTransition(() => startEndless()); } },
       { label: '机库', primary: false, action: () => { AudioSys.click(); setState('hangar'); } },
       { label: '按键设置', primary: false, action: () => { AudioSys.click(); settingsReturn = 'title'; setState('settings'); } }
@@ -4558,7 +4559,8 @@ function buildMenuButtons(state) {
   } else if (state === 'briefing') {
     menuButtons = [
       { x: cx - bw / 2, y: H * 0.72, w: bw, h: bh, label: '出击', action: () => { AudioSys.click(); startTransition(() => startMission(GAME.missionIndex, GAME.mode)); }, primary: true },
-      { x: cx - bw / 2, y: H * 0.72 + bh + 14, w: bw, h: bh, label: '返回标题', action: () => { AudioSys.click(); startTransition(() => { GAME.mode = 'campaign'; setState('title'); }); } }
+      { x: cx - bw / 2, y: H * 0.72 + bh + 14, w: bw, h: bh, label: '返回标题', action: () => { AudioSys.click(); startTransition(() => { GAME.mode = 'campaign'; setState('title'); }); } },
+      { x: cx - bw / 2, y: H * 0.72 + (bh + 14) * 2, w: bw, h: bh, label: '选择任务', action: () => { AudioSys.click(); setState('select'); } }
     ];
   } else if (state === 'complete') {
     const isLast = GAME.missionIndex >= Math.min(save.unlockedMissions, MISSION_DEFS.length) - 1;
@@ -4593,7 +4595,16 @@ function buildMenuButtons(state) {
     ];
   } else if (state === 'hangar') {
     menuButtons = [
-      { x: cx - bw / 2, y: H * 0.86, w: bw, h: bh, label: '返回', action: () => { AudioSys.click(); setState('title'); } }
+      { x: cx - bw / 2, y: H * 0.86, w: bw * 0.48, h: bh, label: '返回', action: () => { AudioSys.click(); setState('title'); } },
+      { x: cx + 18, y: H * 0.86, w: bw * 0.48 - 18, h: bh, label: '成就', action: () => { AudioSys.click(); achievementsReturn = 'hangar'; setState('achievements'); } }
+    ];
+  } else if (state === 'achievements') {
+    menuButtons = [
+      { x: cx - bw / 2, y: H * 0.88, w: bw, h: bh, label: achievementsReturn === 'hangar' ? '返回机库' : '返回标题', action: () => { AudioSys.click(); setState(achievementsReturn || 'title'); } }
+    ];
+  } else if (state === 'select') {
+    menuButtons = [
+      { x: cx - bw / 2, y: H * 0.90, w: bw, h: bh, label: '返回标题', action: () => { AudioSys.click(); setState('title'); } }
     ];
   }
   top = 0;
@@ -4730,6 +4741,29 @@ function handleCanvasPress(x, y) {
         return true;
       }
       dx += L.diffW + L.diffGap;
+    }
+  }
+  if (GAME.state === 'title') {
+    const ar = titleAchRegion();
+    if (x >= ar.x && x <= ar.x + ar.w && y >= ar.y && y <= ar.y + ar.h) {
+      AudioSys.click();
+      achievementsReturn = 'title';
+      setState('achievements');
+      return true;
+    }
+  }
+  if (GAME.state === 'select') {
+    const idx = selectCardAt(x, y);
+    if (idx >= 0) {
+      const def = MISSION_DEFS[idx];
+      if (def.index <= save.unlockedMissions) {
+        AudioSys.click();
+        GAME.missionIndex = idx;
+        setState('briefing');
+      } else {
+        addToast('通关前一任务解锁', '#ff9f43', 16);
+      }
+      return true;
     }
   }
   for (const b of menuButtons) {
@@ -5990,6 +6024,203 @@ function drawHangar() {
   for (const b of menuButtons) drawMenuButton(b, b === hovered);
 }
 
+// ---------- 成就界面 + 选关界面(任务书 13) ----------
+const MISSION_TYPE_LABELS = { clear: '清场', escort: '护航', intercept: '拦截', survive: '坚守', race: '竞速', boss: 'BOSS' };
+const SELECT_CHAPTERS = [
+  { chapter: 1, name: '黎明防线' },
+  { chapter: 2, name: '深海裂谷' },
+  { chapter: 3, name: '风暴尽头' }
+];
+
+// 成就网格布局:宽屏 4 列 × 3 行,中屏 3 列 × 4 行,窄屏 2 列 × 6 行
+function achievementsLayout() {
+  const cols = W >= 1200 ? 4 : (W >= 700 ? 3 : 2);
+  const rows = Math.ceil(ACHIEVEMENT_DEFS.length / cols);
+  const cardW = cols === 4
+    ? Math.min(300, (W * 0.9 - (cols - 1) * 14) / cols)
+    : (cols === 3 ? Math.min(330, (W * 0.88 - (cols - 1) * 16) / cols)
+                 : Math.min(340, (W * 0.92 - (cols - 1) * 16) / cols));
+  const cardH = cols === 4 ? Math.min(130, H * 0.145)
+    : (cols === 3 ? Math.min(120, H * 0.135) : Math.min(104, H * 0.115));
+  const gapX = 16, gapY = 14;
+  const gridW = cols * cardW + (cols - 1) * gapX;
+  const gridH = rows * cardH + (rows - 1) * gapY;
+  const startX = W / 2 - gridW / 2;
+  const startY = H * 0.15;
+  return { cols, rows, cardW, cardH, gapX, gapY, startX, startY, gridW, gridH };
+}
+
+function drawAchievements() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#0a2540');
+  g.addColorStop(1, '#0d3a4d');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd166';
+  ctx.shadowColor = 'rgba(255,150,40,0.5)';
+  ctx.shadowBlur = 18;
+  ctx.font = '900 ' + Math.round(Math.min(34, W * 0.045)) + 'px "Microsoft YaHei", sans-serif';
+  ctx.fillText('成就 · ' + ACHIEVEMENT_COUNT, W / 2, H * 0.08);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#aebecd';
+  ctx.font = '500 ' + Math.round(Math.min(13, W * 0.018)) + 'px "Microsoft YaHei", sans-serif';
+  ctx.fillText('已解锁 ' + (save.achievements ? save.achievements.length : 0) + ' / ' + ACHIEVEMENT_COUNT + ' 个成就', W / 2, H * 0.08 + 28);
+
+  const L = achievementsLayout();
+  const nameFont = Math.round(Math.min(17, L.cardW * 0.055));
+  const smallFont = Math.round(Math.min(12, L.cardW * 0.042));
+  const miniFont = Math.round(Math.min(11, L.cardW * 0.04));
+  for (let i = 0; i < ACHIEVEMENT_DEFS.length; i++) {
+    const def = ACHIEVEMENT_DEFS[i];
+    const col = i % L.cols, row = Math.floor(i / L.cols);
+    const x = L.startX + col * (L.cardW + L.gapX);
+    const y = L.startY + row * (L.cardH + L.gapY);
+    const unlocked = isUnlocked(def.id);
+    ctx.fillStyle = unlocked ? 'rgba(24,46,66,0.95)' : 'rgba(9,16,26,0.78)';
+    ctx.strokeStyle = unlocked ? '#ffd166' : 'rgba(120,140,160,0.35)';
+    ctx.lineWidth = unlocked ? 2 : 1.2;
+    roundRect(x, y, L.cardW, L.cardH, 10);
+    ctx.fill(); ctx.stroke();
+    ctx.textAlign = 'center';
+    if (unlocked) {
+      ctx.fillStyle = '#ffd166';
+      ctx.font = '800 ' + nameFont + 'px "Microsoft YaHei", sans-serif';
+      ctx.fillText('✓', x + 16, y + 26);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(def.name, x + L.cardW / 2, y + 32);
+    } else {
+      ctx.fillStyle = 'rgba(170,185,200,0.55)';
+      ctx.font = '800 ' + nameFont + 'px "Microsoft YaHei", sans-serif';
+      ctx.fillText(def.name, x + L.cardW / 2, y + 32);
+      ctx.fillStyle = 'rgba(255,255,255,0.45)';
+      ctx.font = '600 ' + smallFont + 'px "Microsoft YaHei", sans-serif';
+      ctx.fillText('🔒', x + L.cardW - 18, y + 24);
+    }
+    ctx.fillStyle = unlocked ? '#aebecd' : 'rgba(150,165,180,0.5)';
+    ctx.font = '500 ' + smallFont + 'px "Microsoft YaHei", sans-serif';
+    ctx.fillText(def.desc, x + L.cardW / 2, y + 58);
+    ctx.fillStyle = unlocked ? 'rgba(125,255,176,0.85)' : 'rgba(150,165,180,0.5)';
+    ctx.font = '600 ' + miniFont + 'px "Microsoft YaHei", sans-serif';
+    ctx.fillText(unlocked ? '已解锁' : '未解锁', x + L.cardW / 2, y + L.cardH - 16);
+  }
+  const hovered = hoverButton();
+  for (const b of menuButtons) drawMenuButton(b, b === hovered);
+}
+
+// 选关布局:3 个章节分组,每组 1 行 × 3 卡片
+function selectLayout() {
+  const cardW = Math.min(280, Math.max(150, W * 0.24));
+  const cardH = Math.min(150, Math.max(104, H * 0.17));
+  const gapX = Math.min(24, (W - cardW * 3) / 4);
+  const gridW = cardW * 3 + gapX * 2;
+  const startX = W / 2 - gridW / 2;
+  const labelH = 30;
+  const groupGap = Math.min(34, H * 0.045);
+  const startY = H * 0.15;
+  const groups = [];
+  for (let i = 0; i < 3; i++) groups.push({ y: startY + i * (labelH + cardH + groupGap) });
+  return { cardW, cardH, gapX, gridW, startX, labelH, groupGap, startY, groups };
+}
+
+// (x, y) → 关卡下标(0..8);未命中返回 -1
+function selectCardAt(x, y) {
+  const L = selectLayout();
+  for (let g = 0; g < L.groups.length; g++) {
+    const rowY = L.groups[g].y + L.labelH;
+    if (y < rowY || y > rowY + L.cardH) continue;
+    const col = Math.floor((x - L.startX) / (L.cardW + L.gapX));
+    if (col < 0 || col > 2) return -1;
+    const cx = L.startX + col * (L.cardW + L.gapX);
+    if (x < cx || x > cx + L.cardW) return -1;
+    return g * 3 + col;
+  }
+  return -1;
+}
+
+function drawSelect() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#0a2540');
+  g.addColorStop(1, '#0d3a4d');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd166';
+  ctx.shadowColor = 'rgba(255,150,40,0.5)';
+  ctx.shadowBlur = 18;
+  ctx.font = '900 ' + Math.round(Math.min(34, W * 0.045)) + 'px "Microsoft YaHei", sans-serif';
+  ctx.fillText('选择任务', W / 2, H * 0.08);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#aebecd';
+  ctx.font = '500 ' + Math.round(Math.min(13, W * 0.018)) + 'px "Microsoft YaHei", sans-serif';
+  ctx.fillText('战役共 ' + MISSION_DEFS.length + ' 关 · 已解锁 ' + save.unlockedMissions + ' 关', W / 2, H * 0.08 + 28);
+
+  const L = selectLayout();
+  const nameFont = Math.round(Math.min(17, L.cardW * 0.06));
+  const smallFont = Math.round(Math.min(12, L.cardW * 0.045));
+  for (let i = 0; i < MISSION_DEFS.length; i++) {
+    const def = MISSION_DEFS[i];
+    const gIdx = Math.floor(i / 3);
+    const col = i % 3;
+    const x = L.startX + col * (L.cardW + L.gapX);
+    const y = L.groups[gIdx].y + L.labelH;
+    const unlocked = def.index <= save.unlockedMissions;
+    const rank = (save.bestRank && save.bestRank[def.index - 1]) || null;
+    ctx.fillStyle = unlocked ? 'rgba(14,32,52,0.92)' : 'rgba(9,16,26,0.78)';
+    ctx.strokeStyle = unlocked ? 'rgba(140,180,210,0.6)' : 'rgba(120,140,160,0.35)';
+    ctx.lineWidth = 1.2;
+    roundRect(x, y, L.cardW, L.cardH, 10);
+    ctx.fill(); ctx.stroke();
+    ctx.textAlign = 'center';
+    ctx.fillStyle = unlocked ? '#ffffff' : 'rgba(170,185,200,0.55)';
+    ctx.font = '800 ' + nameFont + 'px "Microsoft YaHei", sans-serif';
+    ctx.fillText(def.name, x + L.cardW / 2, y + 32);
+    const tlabel = MISSION_TYPE_LABELS[def.type] || String(def.type);
+    ctx.fillStyle = unlocked ? 'rgba(70,150,200,0.35)' : 'rgba(80,95,110,0.7)';
+    ctx.strokeStyle = unlocked ? 'rgba(127,212,255,0.6)' : 'rgba(120,140,160,0.3)';
+    ctx.lineWidth = 1;
+    const tagW = Math.min(72, L.cardW - 24);
+    roundRect(x + L.cardW / 2 - tagW / 2, y + 42, tagW, 20, 10);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = unlocked ? '#7fd4ff' : 'rgba(150,165,180,0.55)';
+    ctx.font = '600 ' + smallFont + 'px "Microsoft YaHei", sans-serif';
+    ctx.fillText(tlabel, x + L.cardW / 2, y + 42 + 14);
+    ctx.fillStyle = rank ? (RANK_COLORS[rank] || '#aebecd') : 'rgba(150,165,180,0.55)';
+    ctx.font = '700 ' + smallFont + 'px "Microsoft YaHei", sans-serif';
+    ctx.fillText('最佳评级 ' + (rank || '-'), x + L.cardW / 2, y + 86);
+    ctx.fillStyle = unlocked ? 'rgba(125,255,176,0.85)' : 'rgba(255,255,255,0.45)';
+    ctx.font = '600 ' + smallFont + 'px "Microsoft YaHei", sans-serif';
+    ctx.fillText(unlocked ? '可出击' : '🔒 通关前一任务解锁', x + L.cardW / 2, y + L.cardH - 14);
+  }
+  for (let gIdx = 0; gIdx < SELECT_CHAPTERS.length; gIdx++) {
+    const ch = SELECT_CHAPTERS[gIdx];
+    ctx.fillStyle = '#dfe9f2';
+    ctx.font = '700 ' + Math.round(Math.min(15, W * 0.02)) + 'px "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('第 ' + ch.chapter + ' 章 · ' + ch.name, W / 2 - L.gridW / 2, L.groups[gIdx].y + 18);
+    ctx.fillStyle = 'rgba(120,180,220,0.4)';
+    ctx.fillRect(W / 2 - L.gridW / 2, L.groups[gIdx].y + 24, L.gridW, 1);
+  }
+  ctx.textAlign = 'center';
+  const hovered = hoverButton();
+  for (const b of menuButtons) drawMenuButton(b, b === hovered);
+}
+
+// 标题页成就段点击热区(与 drawTitle 中的成就文案位置一致)
+function titleAchRegion() {
+  const achText = '成就 ' + (save.achievements ? save.achievements.length : 0) + '/' + ACHIEVEMENT_COUNT;
+  const statsText = '击坠 ' + save.totalKills + ' · 通关 ' + save.missionsCleared + ' · 无尽最高 ' + save.bestKills;
+  ctx.font = '600 ' + Math.round(Math.min(14, W * 0.02)) + 'px "Microsoft YaHei", sans-serif';
+  const aW = ctx.measureText(achText).width;
+  const gW = ctx.measureText('  ｜  ').width;
+  const sW = ctx.measureText(statsText).width;
+  const total = aW + gW + sW;
+  let hintY = H * 0.78;
+  for (const b of menuButtons) hintY = Math.max(hintY, b.y + b.h);
+  hintY += 26;
+  return { x: W / 2 - total / 2, y: hintY - 20, w: aW + gW, h: 34 };
+}
+
 function drawTitle() {
   const g = ctx.createLinearGradient(0, 0, 0, H);
   g.addColorStop(0, '#0a2540');
@@ -6033,12 +6264,20 @@ function drawTitle() {
   let hintY = H * 0.78;
   for (const b of menuButtons) hintY = Math.max(hintY, b.y + b.h);
   hintY += 26;
-  ctx.fillStyle = 'rgba(255,209,102,0.9)';
+  // 成就计数并入战绩行(任务书 13:修复与按钮区重叠),成就段可点击进入成就界面
+  const achText = '成就 ' + (save.achievements ? save.achievements.length : 0) + '/' + ACHIEVEMENT_COUNT;
+  const statsText = '击坠 ' + save.totalKills + ' · 通关 ' + save.missionsCleared + ' · 无尽最高 ' + save.bestKills;
   ctx.font = '600 ' + Math.round(Math.min(14, W * 0.02)) + 'px "Microsoft YaHei", sans-serif';
-  ctx.fillText('成就 ' + (save.achievements ? save.achievements.length : 0) + '/12', W / 2, H * 0.80);
+  const gapText = '  ｜  ';
+  const aW = ctx.measureText(achText).width;
+  const gW = ctx.measureText(gapText).width;
+  const sW = ctx.measureText(statsText).width;
+  const segX = W / 2 - (aW + gW + sW) / 2;
+  ctx.fillStyle = 'rgba(255,209,102,0.95)';
+  ctx.fillText(achText, segX + aW / 2, hintY);
   ctx.fillStyle = 'rgba(210,230,240,0.75)';
   ctx.font = '500 ' + Math.round(Math.min(13, W * 0.018)) + 'px "Microsoft YaHei", sans-serif';
-  ctx.fillText('击坠 ' + save.totalKills + ' · 通关 ' + save.missionsCleared + ' · 无尽最高 ' + save.bestKills, W / 2, hintY);
+  ctx.fillText(statsText, segX + aW + gW + sW / 2, hintY);
   const lines = [
     '操作：鼠标瞄准 ｜ ' + prettyKey(bindFor('gun')) + ' 机炮 ｜ ' + prettyKey(bindFor('missile')) + ' 导弹 ｜ ' + prettyKey(bindFor('dash')) + ' 突进 ｜ ' + prettyKey(bindFor('rollLeft')) + '/' + prettyKey(bindFor('rollRight')) + ' 滚筒',
     prettyKey(bindFor('throttleUp')) + '/' + prettyKey(bindFor('throttleDown')) + ' 油门 ｜ ' + prettyKey(bindFor('afterburn')) + ' 加力 ｜ ' + prettyKey(bindFor('pause')) + ' 暂停 ｜ ' + prettyKey(bindFor('mute')) + ' 静音'
@@ -6335,7 +6574,7 @@ function update(dt) {
     }
   } else if (GAME.state === 'paused') {
     // keep world visible but frozen
-  } else if (GAME.state === 'title' || GAME.state === 'briefing' || GAME.state === 'complete' || GAME.state === 'gameover' || GAME.state === 'hangar') {
+  } else if (GAME.state === 'title' || GAME.state === 'briefing' || GAME.state === 'complete' || GAME.state === 'gameover' || GAME.state === 'hangar' || GAME.state === 'achievements' || GAME.state === 'select') {
     updateParticles(dt);
   }
   if (GAME.pendingTimer > 0) {
@@ -6371,6 +6610,10 @@ function draw() {
     drawSettings();
   } else if (GAME.state === 'hangar') {
     drawHangar();
+  } else if (GAME.state === 'achievements') {
+    drawAchievements();
+  } else if (GAME.state === 'select') {
+    drawSelect();
   }
   if (GAME.state === 'playing' && upgradeChoice) drawUpgradeChoice();
   drawTransition();
