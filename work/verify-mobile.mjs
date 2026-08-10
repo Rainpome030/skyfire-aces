@@ -377,6 +377,119 @@ async function main() {
   check('j1.截图 t21-mobile.png 含追尾视角飞机(中下区域主色像素>150)', shotOk.planeHits > 150, 'hits=' + shotOk.planeHits + ' → work/t21-mobile.png');
   check('j2.截图右侧条区域含油门填充色 #66d9ff(像素>50)', shotOk.barHits > 50, 'barHits=' + shotOk.barHits + ' bar=' + JSON.stringify(shotOk.bar) + ' throttle=' + shotOk.throttle);
 
+  // ===== k. PC 鼠标转向(任务书 22:相对转向 + 距离控速)=====
+  // 静态:常量默认值 + 辅助函数 + 绝对角度 atan2 残留检查(文本层)
+  check('k1.静态:MOUSE_STEER_* 常量默认值(40/0.35/1.5/0.2/2)', /MOUSE_STEER_DEADZONE = 40/.test(html) && /MOUSE_STEER_FULL = 0\.35/.test(html) && /MOUSE_STEER_RATE = 1\.5/.test(html) && /MOUSE_STEER_MIN = 0\.2/.test(html) && /MOUSE_STEER_TIMEOUT = 2/.test(html));
+  check('k2.静态:updatePlayer 无 atan2(dy, dx) 绝对角度残留、mouseActive 已删', !html.includes('Math.atan2(dy, dx)') && !/\bmouseActive\b/.test(html));
+  check('k3.静态:mouseSteerActive 辅助函数存在(now - input.mouse.movedAt) < MOUSE_STEER_TIMEOUT', /function mouseSteerActive\(now\) \{ return \(now - input\.mouse\.movedAt\) < MOUSE_STEER_TIMEOUT; \}/.test(html));
+  const k4 = await evalJs(`(() => {
+    const v = { D: MOUSE_STEER_DEADZONE, F: MOUSE_STEER_FULL, R: MOUSE_STEER_RATE, M: MOUSE_STEER_MIN, T: MOUSE_STEER_TIMEOUT, hasFn: typeof mouseSteerActive === 'function' };
+    return v;
+  })()`);
+  check('k4.运行时:常量可读且 mouseSteerActive 为函数', k4.D === 40 && k4.F === 0.35 && k4.R === 1.5 && k4.M === 0.2 && k4.T === 2 && k4.hasFn === true, JSON.stringify(k4));
+
+  // 右偏转向:鼠标偏右 → heading 增大(相对转向,持续右转)
+  const k5 = await evalJs(`(() => {
+    startMission(0, 'campaign'); ChapterCard.skip();
+    GAME.state = 'playing';
+    player.alive = true; player.invuln = 9999; player.altitude = 6000;
+    player.heading = 0.3; player.speed = 200; player.throttle = 0.5;
+    input.isTouch = false; input.keys = {};
+    touchSwipe.active = false; touchSwipe.dir = null;
+    input.mouse.movedAt = performance.now() / 1000 - 0.1;   // 激活(< 2s)
+    input.mouse.x = W / 2 + 200;                            // 偏右 200px
+    const h0 = player.heading;
+    for (let i = 0; i < 40; i++) updatePlayer(0.016);
+    return { h0, h1: player.heading, d: angDiff(h0, player.heading) };
+  })()`);
+  check('k5.右偏转向:mx=+200 推进 40 帧 → heading 增大(右转)', k5.d > 0.05, 'd=' + k5.d.toFixed(4));
+
+  // 左偏转向:对称,heading 减小
+  const k6 = await evalJs(`(() => {
+    startMission(0, 'campaign'); ChapterCard.skip();
+    GAME.state = 'playing';
+    player.alive = true; player.invuln = 9999; player.altitude = 6000;
+    player.heading = 0.3; player.speed = 200; player.throttle = 0.5;
+    input.isTouch = false; input.keys = {};
+    touchSwipe.active = false; touchSwipe.dir = null;
+    input.mouse.movedAt = performance.now() / 1000 - 0.1;
+    input.mouse.x = W / 2 - 200;                            // 偏左 200px
+    const h0 = player.heading;
+    for (let i = 0; i < 40; i++) updatePlayer(0.016);
+    return { h0, h1: player.heading, d: angDiff(h0, player.heading) };
+  })()`);
+  check('k6.左偏转向:mx=-200 推进 40 帧 → heading 减小(左转)', k6.d < -0.05, 'd=' + k6.d.toFixed(4));
+
+  // 距离控速:mx=300 与 mx=100 相同帧数 → 300 转角显著大于 100(>1.5 倍)
+  const k7 = await evalJs(`(() => {
+    function run(mx) {
+      startMission(0, 'campaign'); ChapterCard.skip();
+      GAME.state = 'playing';
+      player.alive = true; player.invuln = 9999; player.altitude = 6000;
+      player.heading = 0.7; player.speed = 200; player.throttle = 0.5;
+      input.isTouch = false; input.keys = {};
+      touchSwipe.active = false; touchSwipe.dir = null;
+      input.mouse.movedAt = performance.now() / 1000 - 0.1;
+      input.mouse.x = W / 2 + mx;
+      const h0 = player.heading;
+      for (let i = 0; i < 40; i++) updatePlayer(0.016);
+      return angDiff(h0, player.heading);
+    }
+    const d300 = run(300), d100 = run(100);
+    return { d300, d100, ratio: d300 / d100, W };
+  })()`);
+  check('k7.距离控速:mx=300 转角 > 1.5 倍于 mx=100', k7.ratio > 1.5, 'ratio=' + k7.ratio.toFixed(2) + ' d300=' + k7.d300.toFixed(4) + ' d100=' + k7.d100.toFixed(4) + ' W=' + k7.W);
+
+  // 回中停止:mx 在死区内 → heading 不变
+  const k8 = await evalJs(`(() => {
+    startMission(0, 'campaign'); ChapterCard.skip();
+    GAME.state = 'playing';
+    player.alive = true; player.invuln = 9999; player.altitude = 6000;
+    player.heading = 0.3; player.speed = 200; player.throttle = 0.5;
+    input.isTouch = false; input.keys = {};
+    touchSwipe.active = false; touchSwipe.dir = null;
+    input.mouse.movedAt = performance.now() / 1000 - 0.1;
+    input.mouse.x = W / 2 + 20;                             // 死区(40)内
+    const h0 = player.heading;
+    for (let i = 0; i < 40; i++) updatePlayer(0.016);
+    return { d: angDiff(h0, player.heading) };
+  })()`);
+  check('k8.回中停止:mx=20 在死区内推进 40 帧 → heading 不变', Math.abs(k8.d) < 1e-9, 'd=' + k8.d);
+
+  // 超时失效:movedAt 距今 3s(>2s)→ 不转向
+  const k9 = await evalJs(`(() => {
+    startMission(0, 'campaign'); ChapterCard.skip();
+    GAME.state = 'playing';
+    player.alive = true; player.invuln = 9999; player.altitude = 6000;
+    player.heading = 0.3; player.speed = 200; player.throttle = 0.5;
+    input.isTouch = false; input.keys = {};
+    touchSwipe.active = false; touchSwipe.dir = null;
+    input.mouse.movedAt = performance.now() / 1000 - 3;     // 超时(3 > 2)
+    input.mouse.x = W / 2 + 300;
+    const h0 = player.heading;
+    for (let i = 0; i < 40; i++) updatePlayer(0.016);
+    return { d: angDiff(h0, player.heading) };
+  })()`);
+  check('k9.超时失效:movedAt 距今 3s → heading 不变', Math.abs(k9.d) < 1e-9, 'd=' + k9.d);
+
+  // 键盘优先:turnL 按下 + 鼠标偏右 → 按键盘逻辑左转(优先级链:手势>键盘>鼠标)
+  const k10 = await evalJs(`(() => {
+    startMission(0, 'campaign'); ChapterCard.skip();
+    GAME.state = 'playing';
+    player.alive = true; player.invuln = 9999; player.altitude = 6000;
+    player.heading = 0.5; player.speed = 200; player.throttle = 0.5;
+    input.isTouch = false; input.keys = {};
+    touchSwipe.active = false; touchSwipe.dir = null;
+    input.mouse.movedAt = performance.now() / 1000 - 0.1;
+    input.mouse.x = W / 2 + 300;                            // 鼠标偏右(若鼠标优先会右转)
+    input.keys[bindFor('turnLeft')] = true;                 // 键盘左转按下
+    const h0 = player.heading;
+    for (let i = 0; i < 40; i++) updatePlayer(0.016);
+    input.keys = {};
+    return { d: angDiff(h0, player.heading) };
+  })()`);
+  check('k10.键盘优先:turnL + 鼠标偏右 → heading 减小(左转)', k10.d < -0.05, 'd=' + k10.d.toFixed(4));
+
   const failed = results.filter((r) => !r.pass);
   console.log('\n=== 结果: ' + (results.length - failed.length) + '/' + results.length + ' 通过 ===');
   if (errors.length) { console.log('Chrome 错误:\n' + errors.join('\n')); process.exitCode = 1; }
