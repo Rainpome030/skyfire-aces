@@ -978,7 +978,7 @@ const player = {
   x: 0, y: 0, heading: 0, speed: 0, bank: 0,
   r: 16,
   hp: 100, maxHp: 100,
-  altitude: 3500,   // 高度系统(任务书 19):速度驱动,初始 3500,上限 9000,归零死亡
+  altitude: 9000,   // 高度系统(任务书 18):速度驱动,上限 9000,归零死亡
   missiles: 40, maxMissiles: 48,
   throttle: 0.68, target: null, lock: 0,
   fireCd: 0, missileCd: 0, invuln: 0, alive: true, dead: false, reviveAnim: null,
@@ -2311,7 +2311,7 @@ function killPlane(p) {
       player.alive = true;
       player.dead = false;
       player.hp = Math.round(player.maxHp * 0.6);
-      player.altitude = 3500;   // 复活重置高度(任务书 19)
+      player.altitude = 9000;   // 复活重置高度(任务书 18)
       player.invuln = 1.2;   // 动画期无敌(留余量),动画结束后由 updatePlayer 重新计时 3 秒
       player.reviveAnim = { t: 0, dur: 1.0 };
       for (let bi = 0; bi < bullets.length; bi++) if (bullets[bi].enemy) bullets[bi].life = 0;
@@ -2545,12 +2545,12 @@ function updatePlayer(dt) {
   player.missileCd -= dt;
   player.invuln = Math.max(0, player.invuln - dt);
   player.hitFlash = Math.max(0, player.hitFlash - dt);
-  // 高度系统:速度驱动(任务书 19)
-  // speedRatio = player.speed / CFG.maxSpeed(370);rate = (speedRatio - 0.5) * 1600 高度/秒
-  // ratio=0.27(怠速95)→ 约 -389/s,ratio=0.5(185)→ 0,ratio=1(370)→ +800/s,ratio=1.3(加力480)→ +1276/s
-  // 系数 1600 可调(任务书 19:原 160 ×10);高度为 0 → 直接死亡(走 killPlane 现有流程)
+  // 高度系统:速度驱动(任务书 18)
+  // speedRatio = player.speed / CFG.maxSpeed(370);rate = (speedRatio - 0.5) * 160 高度/秒
+  // ratio=0.27(怠速95)→ -37/s,ratio=0.5 → 0,ratio=1(370)→ +80/s,ratio=1.3(加力480)→ +128/s
+  // 系数 160 可调;高度为 0 → 直接死亡(走 killPlane 现有流程)
   const speedRatio = player.speed / CFG.maxSpeed;
-  player.altitude = Math.max(0, Math.min(9000, player.altitude + (speedRatio - 0.5) * 1600 * dt));
+  player.altitude = Math.max(0, Math.min(9000, player.altitude + (speedRatio - 0.5) * 160 * dt));
   if (player.altitude <= 0) { killPlane(player); return; }
   // 复活动画推进:动画结束后才开始 3 秒无敌计时(动画期间 invuln=1.2 已保证无敌)
   if (player.reviveAnim) {
@@ -3387,7 +3387,7 @@ function startMission(index, mode) {
   player.hp = player.maxHp;
   player.missiles = player.maxMissiles;
   player.throttle = 0.68;
-  player.altitude = 3500;   // 开局重置高度(任务书 19)
+  player.altitude = 9000;   // 开局重置高度(任务书 18)
   player.target = null; player.lock = 0;
   player.alive = true; player.dead = false; player.invuln = 1;
   player.rollActive = false; player.rollT = 0; player.rollDir = 0; player.rollCd = 0;
@@ -3436,7 +3436,7 @@ function startEndless() {
   player.x = world.W / 2; player.y = world.H / 2;
   player.heading = -Math.PI / 2; player.speed = 200;
   player.hp = player.maxHp; player.missiles = player.maxMissiles;
-  player.throttle = 0.68; player.altitude = 3500; player.target = null; player.lock = 0;
+  player.throttle = 0.68; player.altitude = 9000; player.target = null; player.lock = 0;
   player.alive = true; player.dead = false; player.invuln = 1;
   player.rollActive = false; player.rollT = 0; player.rollDir = 0; player.rollCd = 0;
   player.lastDirTap = { dir: null, t: -99 };

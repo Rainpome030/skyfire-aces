@@ -20,10 +20,10 @@ function check(name, cond, detail) {
 }
 check('a1.静态:不再含假值 12000 - player.hp', !html.includes('12000 - player.hp'));
 check('a2.静态:HUD 使用真实高度 Math.round(player.altitude)', html.includes("'高度 ' + Math.round(player.altitude) + ' m'"));
-check('a3.静态:player 对象含 altitude 字段(9000)', /altitude:\s*9000/.test(html));
-check('a4.静态:killPlane 复活分支重置 altitude=9000', /player\.hp = Math\.round\(player\.maxHp \* 0\.6\);\r?\n\s*player\.altitude = 9000;/.test(html));
-check('a5.静态:startMission 开局重置 altitude=9000', /player\.throttle = 0\.68;\r?\n\s*player\.altitude = 9000;/.test(html));
-check('a6.静态:startEndless 开局重置 altitude=9000', /player\.throttle = 0\.68; player\.altitude = 9000;/.test(html));
+check('a3.静态:player 对象含 altitude 字段(3500)', /altitude:\s*3500/.test(html));
+check('a4.静态:killPlane 复活分支重置 altitude=3500', /player\.hp = Math\.round\(player\.maxHp \* 0\.6\);\r?\n\s*player\.altitude = 3500;/.test(html));
+check('a5.静态:startMission 开局重置 altitude=3500', /player\.throttle = 0\.68;\r?\n\s*player\.altitude = 3500;/.test(html));
+check('a6.静态:startEndless 开局重置 altitude=3500', /player\.throttle = 0\.68; player\.altitude = 3500;/.test(html));
 check('a7.静态:updatePlayer 含速度驱动高度计算', /const speedRatio = player\.speed \/ CFG\.maxSpeed;/.test(html));
 check('a8.静态:低空警告「高度过低!」', html.includes('高度过低!'));
 
@@ -113,11 +113,11 @@ async function main() {
 
   // ===== b. 开局重置 =====
   const b1 = await evalJs(`(() => { startMission(0, 'campaign'); ChapterCard.skip(); return { alt: player.altitude, state: GAME.state }; })()`);
-  check('b1.startMission 后 altitude === 9000', b1.alt === 9000, JSON.stringify(b1));
+  check('b1.startMission 后 altitude === 3500', b1.alt === 3500, JSON.stringify(b1));
   const b2 = await evalJs(`(() => { startEndless(); player.invuln = 9999; return { alt: player.altitude, rc: GAME.reviveCount }; })()`);
-  check('b2.startEndless 后 altitude === 9000', b2.alt === 9000, JSON.stringify(b2));
+  check('b2.startEndless 后 altitude === 3500', b2.alt === 3500, JSON.stringify(b2));
 
-  // ===== c. 低速掉高:speed=100(throttle=0,速度稳定在 95~100)40 帧 ≈ 0.64s ≈ -24m =====
+  // ===== c. 低速掉高:speed=100(throttle=0,速度稳定在 95~100)40 帧 ≈ 0.64s ≈ -240m(任务书19:原24×10)=====
   const c1 = await evalJs(`(() => {
     startMission(0, 'campaign'); ChapterCard.skip();
     player.throttle = 0; player.speed = 100; player.altitude = 8500;
@@ -125,9 +125,9 @@ async function main() {
     return { alt: player.altitude, speed: player.speed };
   })()`);
   const cDrop = 8500 - c1.alt;
-  check('c.低速掉高:40帧后高度下降(≈-24m)', cDrop > 10 && cDrop < 40, 'drop=' + cDrop.toFixed(2) + ' speed=' + c1.speed.toFixed(1));
+  check('c.低速掉高:40帧后高度下降(≈-240m)', cDrop > 204 && cDrop < 276, 'drop=' + cDrop.toFixed(2) + ' speed=' + c1.speed.toFixed(1));
 
-  // ===== d. 高速回涨:speed=400(throttle=1,速度回落向370)30帧 ≈ +40m =====
+  // ===== d. 高速回涨:speed=400(throttle=1,速度回落向370)30帧 ≈ +428m(任务书19:原42.88×10)=====
   const d1 = await evalJs(`(() => {
     startMission(0, 'campaign'); ChapterCard.skip();
     player.throttle = 1; player.speed = 400; player.altitude = 8000;
@@ -135,7 +135,7 @@ async function main() {
     return { alt: player.altitude, speed: player.speed };
   })()`);
   const dRise = d1.alt - 8000;
-  check('d.高速回涨:30帧后高度上升(≈+40m)', dRise > 15, 'rise=' + dRise.toFixed(2) + ' speed=' + d1.speed.toFixed(1));
+  check('d.高速回涨:30帧后高度上升(≈+428m)', dRise > 360 && dRise < 500, 'rise=' + dRise.toFixed(2) + ' speed=' + d1.speed.toFixed(1));
 
   // ===== e. 封顶:8950 起步 200 帧,全程 ≤9000 且最终 =9000 =====
   const e1 = await evalJs(`(() => {
@@ -151,7 +151,7 @@ async function main() {
   const f1 = await evalJs(`(() => { startMission(0, 'campaign'); ChapterCard.skip(); player.invuln = 9999; return GAME.revivesUsed; })()`);
   const f2 = await evalJs(LOOP_DIE_CAMPAIGN);
   check('f.归零死亡→战役复活:alive=true', f2.alive === true, JSON.stringify(f2));
-  check('f.归零死亡→战役复活:altitude≈9000(复活重置)', f2.altitude === 9000, 'alt=' + f2.altitude);
+  check('f.归零死亡→战役复活:altitude≈3500(复活重置)', f2.altitude === 3500, 'alt=' + f2.altitude);
   check('f.归零死亡→战役复活:revivesUsed=1', f2.ru === 1, 'ru=' + f2.ru);
   check('f.归零死亡→战役复活:pendingState=null', f2.pending === null, 'pending=' + f2.pending);
 
@@ -166,7 +166,7 @@ async function main() {
     while (frames < 3000 && GAME.revivesUsed === ru0) { updatePlayer(0.016); frames++; }
     return { alive: player.alive, alt: player.altitude, rc: GAME.reviveCount, ru: GAME.revivesUsed, frames };
   })()`);
-  check('g1.无尽第1次归零死亡→复活(rc=2,alt=9000)', g1.alive === true && g1.rc === 2 && g1.alt === 9000, JSON.stringify(g1));
+  check('g1.无尽第1次归零死亡→复活(rc=2,alt=3500)', g1.alive === true && g1.rc === 2 && g1.alt === 3500, JSON.stringify(g1));
   const g2 = await evalJs(`(() => {
     player.alive = true; player.dead = false;
     player.throttle = 0; player.speed = 100; player.altitude = 50;
@@ -175,7 +175,7 @@ async function main() {
     while (frames < 3000 && GAME.revivesUsed === ru0) { updatePlayer(0.016); frames++; }
     return { alive: player.alive, alt: player.altitude, rc: GAME.reviveCount, ru: GAME.revivesUsed };
   })()`);
-  check('g2.无尽第2次归零死亡→复活(rc=1,alt=9000)', g2.alive === true && g2.rc === 1 && g2.alt === 9000, JSON.stringify(g2));
+  check('g2.无尽第2次归零死亡→复活(rc=1,alt=3500)', g2.alive === true && g2.rc === 1 && g2.alt === 3500, JSON.stringify(g2));
   const g3 = await evalJs(`(() => {
     player.alive = true; player.dead = false;
     player.throttle = 0; player.speed = 100; player.altitude = 50;
@@ -184,7 +184,7 @@ async function main() {
     while (frames < 3000 && GAME.revivesUsed === ru0) { updatePlayer(0.016); frames++; }
     return { alive: player.alive, alt: player.altitude, rc: GAME.reviveCount, ru: GAME.revivesUsed };
   })()`);
-  check('g3.无尽第3次归零死亡→复活(rc=0,alt=9000)', g3.alive === true && g3.rc === 0 && g3.alt === 9000, JSON.stringify(g3));
+  check('g3.无尽第3次归零死亡→复活(rc=0,alt=3500)', g3.alive === true && g3.rc === 0 && g3.alt === 3500, JSON.stringify(g3));
   const g4 = await evalJs(`(() => {
     player.alive = true; player.dead = false;
     player.throttle = 0; player.speed = 100; player.altitude = 50;
