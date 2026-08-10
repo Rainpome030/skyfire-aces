@@ -5463,6 +5463,86 @@ function drawPickups() {
   }
 }
 
+// ---------- 竞速关检查点可视化(drawWorld 相机变换内调用,世界坐标) ----------
+function drawCheckpoints() {
+  if (!mission || !mission.def || mission.def.type !== 'race') return;
+  const cps = mission.def.checkpoints || [];
+  const n = cps.length;
+  if (n === 0) return;
+  const viewR = Math.hypot(W, H) / cam.zoom + 500;
+  const idx = clamp(mission.raceIndex || 0, 0, n);
+  const pulse = 0.5 + 0.5 * Math.sin(gameTime * 3.0);
+  for (let i = 0; i < n; i++) {
+    const cp = cps[i];
+    // 视口裁剪(与 drawIslands 相同方式)
+    if (Math.abs(cp.x - cam.x) > viewR || Math.abs(cp.y - cam.y) > viewR) continue;
+    if (i < idx) {
+      // 已通过:暗绿低透明度小标记
+      ctx.save();
+      ctx.globalAlpha = 0.45;
+      ctx.fillStyle = '#4ecb71';
+      ctx.beginPath();
+      ctx.arc(cp.x, cp.y, 8, 0, TAU);
+      ctx.fill();
+      ctx.strokeStyle = '#4ecb71';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(cp.x, cp.y, 18, 0, TAU);
+      ctx.stroke();
+      ctx.restore();
+      continue;
+    }
+    const next = i === idx;
+    const col = next ? '#ffd166' : '#8fd0ff';
+    const h = 240;
+    // 垂直光柱:自检查点向上延伸 240px 的半透明渐变柱
+    const g = ctx.createLinearGradient(0, cp.y, 0, cp.y - h);
+    if (next) {
+      g.addColorStop(0, 'rgba(255,209,102,0.62)');
+      g.addColorStop(1, 'rgba(255,209,102,0.02)');
+    } else {
+      g.addColorStop(0, 'rgba(143,208,255,0.34)');
+      g.addColorStop(1, 'rgba(143,208,255,0.02)');
+    }
+    ctx.save();
+    ctx.fillStyle = g;
+    ctx.fillRect(cp.x - (next ? 30 : 18), cp.y - h, next ? 60 : 36, h + 1);
+    // 光柱亮芯
+    ctx.fillStyle = col;
+    ctx.globalAlpha = next ? 0.5 : 0.26;
+    ctx.fillRect(cp.x - (next ? 10 : 5), cp.y - h, next ? 20 : 10, h + 1);
+    ctx.globalAlpha = 1;
+    // 底部定位圆盘(精确目标点,玩家需飞到此处)
+    ctx.fillStyle = col;
+    ctx.globalAlpha = next ? 0.5 : 0.28;
+    ctx.beginPath();
+    ctx.arc(cp.x, cp.y, next ? 22 : 14, 0, TAU);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    // 底部定位环(玩家需飞到此处)
+    ctx.strokeStyle = col;
+    ctx.globalAlpha = next ? 0.85 : 0.45;
+    ctx.lineWidth = next ? 4 : 3;
+    ctx.beginPath();
+    ctx.arc(cp.x, cp.y, (next ? 40 : 26) + pulse * 6, 0, TAU);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    // 顶部悬浮环标 + 菱形(脉动,gameTime 驱动)
+    const topY = cp.y - h;
+    ctx.strokeStyle = col;
+    ctx.lineWidth = next ? 4 : 3;
+    ctx.beginPath();
+    ctx.arc(cp.x, topY, (next ? 24 : 16) + pulse * (next ? 9 : 5), 0, TAU);
+    ctx.stroke();
+    const dR = (next ? 9 : 6) * (1 + pulse * 0.4);
+    ctx.fillStyle = col;
+    ctx.translate(cp.x, topY);
+    ctx.rotate(Math.PI / 4);
+    ctx.fillRect(-dR, -dR, dR * 2, dR * 2);
+    ctx.restore();
+  }
+}
+
 function drawWorld() {
   drawWater(world.theme);
   drawSun();
@@ -5487,6 +5567,7 @@ function drawWorld() {
   drawMissiles();
   if (player.alive) drawPlaneShape(player);
   drawLockIndicator();
+  drawCheckpoints();
   drawParticles();
   ctx.restore();
   ctx.fillStyle = world.theme.haze;
@@ -5523,6 +5604,51 @@ function drawHudBar(x, y, w, h, ratio, fill, back, label, value) {
     ctx.textAlign = 'right';
     ctx.fillText(value, x + w - 7, y + h - 7);
   }
+}
+
+// ---------- 屏幕边缘指引箭头(drawHUD 内调用,屏幕坐标) ----------
+function drawOffscreenArrow(tx, ty, color) {
+  if (!player || !cam) return;
+  // 世界坐标 → 屏幕坐标(与 drawWorld 相机变换一致,含震动偏移)
+  const sx = (tx - cam.x + cam.shakeX) * cam.zoom + W / 2;
+  const sy = (ty - cam.y + cam.shakeY) * cam.zoom + H / 2;
+  // 目标在视口内:不画
+  if (sx >= 0 && sx <= W && sy >= 0 && sy <= H) return;
+  const cx = W / 2, cy = H / 2;
+  const ang = Math.atan2(sy - cy, sx - cx);
+  // 射线与内缩 24px 的边缘矩形求交,箭头画在边缘内侧
+  const hw = W / 2 - 24, hh = H / 2 - 24;
+  const t = Math.min(
+    Math.abs(hw / (Math.cos(ang) || 1e-6)),
+    Math.abs(hh / (Math.sin(ang) || 1e-6))
+  );
+  const ex = cx + Math.cos(ang) * t;
+  const ey = cy + Math.sin(ang) * t;
+  // 三角形箭头(指向目标方向)
+  ctx.save();
+  ctx.translate(ex, ey);
+  ctx.rotate(ang);
+  ctx.fillStyle = color;
+  ctx.shadowColor = 'rgba(0,0,0,0.75)';
+  ctx.shadowBlur = 8;
+  ctx.beginPath();
+  ctx.moveTo(16, 0);
+  ctx.lineTo(-11, -10);
+  ctx.lineTo(-11, 10);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+  // 距离文字(箭头内侧)
+  const d = Math.round(dist(player.x, player.y, tx, ty));
+  ctx.font = '700 13px "Microsoft YaHei", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = color;
+  ctx.shadowColor = 'rgba(0,0,0,0.75)';
+  ctx.shadowBlur = 5;
+  ctx.fillText(d + ' m', ex - Math.cos(ang) * 32, ey - Math.sin(ang) * 32);
+  ctx.shadowBlur = 0;
+  ctx.textBaseline = 'alphabetic';
 }
 
 function drawHUD() {
@@ -5782,6 +5908,15 @@ function drawHUD() {
       ctx.fillText('导弹来袭', W / 2, H * 0.3);
       ctx.shadowBlur = 0;
     }
+  }
+
+  // 屏幕边缘指引箭头(竞速关 → 下一个未达成检查点;护航关 → 运输机)
+  if (m.def && m.def.type === 'race') {
+    const cps = m.def.checkpoints || [];
+    const idx = m.raceIndex || 0;
+    if (idx < cps.length) drawOffscreenArrow(cps[idx].x, cps[idx].y, '#ffd166');
+  } else if (m.escort && m.transport && !m.transport.dead) {
+    drawOffscreenArrow(m.transport.x, m.transport.y, '#4ecb71');
   }
 
   // damage vignette
