@@ -176,9 +176,21 @@ function updateTouchRects() {
 }
 updateTouchRects();
 
-function screenPosFromEvent(e) {
+function canvasPointFromClient(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
-  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  return {
+    x: (clientX - rect.left) * W / rect.width,
+    y: (clientY - rect.top) * H / rect.height
+  };
+}
+
+function screenPosFromEvent(e) {
+  return canvasPointFromClient(e.clientX, e.clientY);
+}
+
+function combatTouchControlsActive() {
+  return GAME.state === 'playing' && !upgradeChoice &&
+    !(typeof ChapterCard !== 'undefined' && ChapterCard.isActive());
 }
 
 canvas.addEventListener('mousemove', (e) => {
@@ -219,15 +231,16 @@ canvas.addEventListener('touchstart', (e) => {
   e.preventDefault();
   AudioSys.init(); AudioSys.resume();
   input.isTouch = true;
-  const rect = canvas.getBoundingClientRect();
+  const combatControls = combatTouchControlsActive();
   for (let i = 0; i < e.changedTouches.length; i++) {
     const t = e.changedTouches[i];
-    const x = t.clientX - rect.left, y = t.clientY - rect.top;
-    if (!input.touch.throttleBarId && inRect(x, y, THROTTLE_BAR)) {
+    const p = canvasPointFromClient(t.clientX, t.clientY);
+    const x = p.x, y = p.y;
+    if (combatControls && !input.touch.throttleBarId && inRect(x, y, THROTTLE_BAR)) {
       // 油门拖动条(任务书 21):独立手指,按触点 Y 直接映射(条顶=1、条底=0)
       input.touch.throttleBarId = t.identifier;
       player.throttle = clamp(1 - (y - THROTTLE_BAR.y) / THROTTLE_BAR.h, 0, 1);
-    } else if (!input.touch.mslId && inRect(x, y, MSL_RECT)) {
+    } else if (combatControls && !input.touch.mslId && inRect(x, y, MSL_RECT)) {
       // 导弹按钮(右下,保留,任务书 20)
       input.touch.mslId = t.identifier;
       input.mslHeld = true;
@@ -241,15 +254,15 @@ canvas.addEventListener('touchstart', (e) => {
 
 canvas.addEventListener('touchmove', (e) => {
   e.preventDefault();
-  const rect = canvas.getBoundingClientRect();
   for (let i = 0; i < e.changedTouches.length; i++) {
     const t = e.changedTouches[i];
+    const p = canvasPointFromClient(t.clientX, t.clientY);
     if (t.identifier === input.touch.throttleBarId) {
       // 油门拖动条:持续按触点 Y 映射(条顶=1、条底=0,任务书 21)
-      const y = t.clientY - rect.top;
+      const y = p.y;
       player.throttle = clamp(1 - (y - THROTTLE_BAR.y) / THROTTLE_BAR.h, 0, 1);
     } else if (t.identifier === input.touch.swipeId) {
-      const x = t.clientX - rect.left, y = t.clientY - rect.top;
+      const x = p.x, y = p.y;
       const dx = x - touchSwipe.startX, dy = y - touchSwipe.startY;
       // 只认水平主轴:|dx|>|dy| 且 |dx|>阈值 才激活转向;垂直滑动不激活任何动作(任务书 21)
       if (Math.abs(dx) > SWIPE_THRESH && Math.abs(dx) > Math.abs(dy)) {
@@ -4924,70 +4937,79 @@ function setState(s) {
 function buildMenuButtons(state) {
   const cx = W / 2;
   const bw = Math.min(360, W * 0.72);
-  const bh = 54;
-  let top = 0;
+  function stack(items, preferredTop) {
+    const count = items.length;
+    const margin = 8;
+    const bh = Math.min(54, Math.max(44, Math.floor((H - margin * 2 - Math.max(0, count - 1) * 8) / count)));
+    const maxGap = count > 1 ? (H - margin * 2 - count * bh) / (count - 1) : 14;
+    const gap = count > 1 ? Math.max(8, Math.min(14, maxGap)) : 0;
+    const totalH = count * bh + Math.max(0, count - 1) * gap;
+    const top = clamp(preferredTop, margin, H - margin - totalH);
+    return items.map((it, i) => ({ x: cx - bw / 2, y: top + (bh + gap) * i, w: bw, h: bh, label: it.label, action: it.action, primary: !!it.primary }));
+  }
+  function footerPair(items, preferredTop) {
+    const bh = Math.min(54, Math.max(44, H - 16));
+    const y = clamp(preferredTop, 8, H - 8 - bh);
+    return [
+      { x: cx - bw / 2, y, w: bw * 0.48, h: bh, label: items[0].label, action: items[0].action, primary: !!items[0].primary },
+      { x: cx + 18, y, w: bw * 0.48 - 18, h: bh, label: items[1].label, action: items[1].action, primary: !!items[1].primary }
+    ];
+  }
   if (state === 'title') {
-    const btnTop = H * 0.60;
     const titleItems = [
       { label: '战役模式', primary: true, action: () => { AudioSys.click(); GAME.mode = 'campaign'; setState('select'); } },
       { label: '自由出击', primary: false, action: () => { AudioSys.click(); GAME.mode = 'endless'; startTransition(() => startEndless()); } },
       { label: '机库', primary: false, action: () => { AudioSys.click(); setState('hangar'); } },
       { label: '按键设置', primary: false, action: () => { AudioSys.click(); settingsReturn = 'title'; setState('settings'); } }
     ];
-    menuButtons = titleItems.map((it, i) => ({ x: cx - bw / 2, y: btnTop + (bh + 14) * i, w: bw, h: bh, label: it.label, action: it.action, primary: it.primary }));
+    menuButtons = stack(titleItems, H * 0.60);
   } else if (state === 'briefing') {
-    menuButtons = [
-      { x: cx - bw / 2, y: H * 0.72, w: bw, h: bh, label: '出击', action: () => { AudioSys.click(); startTransition(() => startMission(GAME.missionIndex, GAME.mode)); }, primary: true },
-      { x: cx - bw / 2, y: H * 0.72 + bh + 14, w: bw, h: bh, label: '返回标题', action: () => { AudioSys.click(); startTransition(() => { GAME.mode = 'campaign'; setState('title'); }); } },
-      { x: cx - bw / 2, y: H * 0.72 + (bh + 14) * 2, w: bw, h: bh, label: '选择任务', action: () => { AudioSys.click(); setState('select'); } }
-    ];
+    menuButtons = stack([
+      { label: '出击', action: () => { AudioSys.click(); startTransition(() => startMission(GAME.missionIndex, GAME.mode)); }, primary: true },
+      { label: '返回标题', action: () => { AudioSys.click(); startTransition(() => { GAME.mode = 'campaign'; setState('title'); }); } },
+      { label: '选择任务', action: () => { AudioSys.click(); setState('select'); } }
+    ], H * 0.72);
   } else if (state === 'complete') {
     const isLast = GAME.missionIndex >= Math.min(save.unlockedMissions, MISSION_DEFS.length) - 1;
     if (isLast) {
-      menuButtons = [
-        { x: cx - bw / 2, y: H * 0.78, w: bw, h: bh, label: '自由出击', action: () => { AudioSys.click(); startTransition(() => startEndless()); }, primary: true },
-        { x: cx - bw / 2, y: H * 0.78 + bh + 14, w: bw, h: bh, label: '返回标题', action: () => { AudioSys.click(); startTransition(() => { setState('title'); }); } }
-      ];
+      menuButtons = stack([
+        { label: '自由出击', action: () => { AudioSys.click(); startTransition(() => startEndless()); }, primary: true },
+        { label: '返回标题', action: () => { AudioSys.click(); startTransition(() => { setState('title'); }); } }
+      ], H * 0.78);
     } else {
-      menuButtons = [
-        { x: cx - bw / 2, y: H * 0.78, w: bw, h: bh, label: '下一任务 (解锁进度 ' + save.unlockedMissions + '/' + MISSION_DEFS.length + ')', action: () => { AudioSys.click(); startTransition(() => { GAME.missionIndex++; setState('briefing'); }); }, primary: true },
-        { x: cx - bw / 2, y: H * 0.78 + bh + 14, w: bw, h: bh, label: '返回标题', action: () => { AudioSys.click(); startTransition(() => { setState('title'); }); } }
-      ];
+      menuButtons = stack([
+        { label: '下一任务 (解锁进度 ' + save.unlockedMissions + '/' + MISSION_DEFS.length + ')', action: () => { AudioSys.click(); startTransition(() => { GAME.missionIndex++; setState('briefing'); }); }, primary: true },
+        { label: '返回标题', action: () => { AudioSys.click(); startTransition(() => { setState('title'); }); } }
+      ], H * 0.78);
     }
   } else if (state === 'gameover') {
     const retryLabel = GAME.mode === 'endless' ? '再战一轮' : '重新出击';
-    menuButtons = [
-      { x: cx - bw / 2, y: H * 0.78, w: bw, h: bh, label: retryLabel, action: () => { AudioSys.click(); if (GAME.mode === 'endless') startTransition(() => startEndless()); else startTransition(() => startMission(GAME.missionIndex, 'campaign')); }, primary: true },
-      { x: cx - bw / 2, y: H * 0.78 + bh + 14, w: bw, h: bh, label: '返回标题', action: () => { AudioSys.click(); startTransition(() => { setState('title'); }); } }
-    ];
+    menuButtons = stack([
+      { label: retryLabel, action: () => { AudioSys.click(); if (GAME.mode === 'endless') startTransition(() => startEndless()); else startTransition(() => startMission(GAME.missionIndex, 'campaign')); }, primary: true },
+      { label: '返回标题', action: () => { AudioSys.click(); startTransition(() => { setState('title'); }); } }
+    ], H * 0.78);
   } else if (state === 'paused') {
-    menuButtons = [
-      { x: cx - bw / 2, y: H * 0.52, w: bw, h: bh, label: '继续战斗', action: () => { AudioSys.click(); setState('playing'); }, primary: true },
-      { x: cx - bw / 2, y: H * 0.52 + bh + 14, w: bw, h: bh, label: '重新开始任务', action: () => { AudioSys.click(); startTransition(() => { if (GAME.mode === 'endless') startEndless(); else startMission(GAME.missionIndex, 'campaign'); }); } },
-      { x: cx - bw / 2, y: H * 0.52 + (bh + 14) * 2, w: bw, h: bh, label: '按键设置', action: () => { AudioSys.click(); settingsReturn = 'paused'; setState('settings'); } },
-      { x: cx - bw / 2, y: H * 0.52 + (bh + 14) * 3, w: bw, h: bh, label: '返回标题', action: () => { AudioSys.click(); startTransition(() => { setState('title'); }); } }
-    ];
+    menuButtons = stack([
+      { label: '继续战斗', action: () => { AudioSys.click(); setState('playing'); }, primary: true },
+      { label: '重新开始任务', action: () => { AudioSys.click(); startTransition(() => { if (GAME.mode === 'endless') startEndless(); else startMission(GAME.missionIndex, 'campaign'); }); } },
+      { label: '按键设置', action: () => { AudioSys.click(); settingsReturn = 'paused'; setState('settings'); } },
+      { label: '返回标题', action: () => { AudioSys.click(); startTransition(() => { setState('title'); }); } }
+    ], H * 0.52);
   } else if (state === 'settings') {
-    menuButtons = [
-      { x: cx - bw / 2, y: H * 0.88, w: bw * 0.48, h: bh, label: '恢复默认', action: () => { AudioSys.click(); keybinds = Object.assign({}, DEFAULT_BINDS); saveKeybinds(); }, primary: false },
-      { x: cx + 18, y: H * 0.88, w: bw * 0.48 - 18, h: bh, label: '返回', action: () => { AudioSys.click(); setState(settingsReturn || 'title'); } }
-    ];
+    menuButtons = footerPair([
+      { label: '恢复默认', action: () => { AudioSys.click(); keybinds = Object.assign({}, DEFAULT_BINDS); saveKeybinds(); } },
+      { label: '返回', action: () => { AudioSys.click(); setState(settingsReturn || 'title'); } }
+    ], H * 0.88);
   } else if (state === 'hangar') {
-    menuButtons = [
-      { x: cx - bw / 2, y: H * 0.86, w: bw * 0.48, h: bh, label: '返回', action: () => { AudioSys.click(); setState('title'); } },
-      { x: cx + 18, y: H * 0.86, w: bw * 0.48 - 18, h: bh, label: '成就', action: () => { AudioSys.click(); achievementsReturn = 'hangar'; setState('achievements'); } }
-    ];
+    menuButtons = footerPair([
+      { label: '返回', action: () => { AudioSys.click(); setState('title'); } },
+      { label: '成就', action: () => { AudioSys.click(); achievementsReturn = 'hangar'; setState('achievements'); } }
+    ], H * 0.86);
   } else if (state === 'achievements') {
-    menuButtons = [
-      { x: cx - bw / 2, y: H * 0.88, w: bw, h: bh, label: achievementsReturn === 'hangar' ? '返回机库' : '返回标题', action: () => { AudioSys.click(); setState(achievementsReturn || 'title'); } }
-    ];
+    menuButtons = stack([{ label: achievementsReturn === 'hangar' ? '返回机库' : '返回标题', action: () => { AudioSys.click(); setState(achievementsReturn || 'title'); } }], H * 0.88);
   } else if (state === 'select') {
-    menuButtons = [
-      { x: cx - bw / 2, y: H * 0.90, w: bw, h: bh, label: '返回标题', action: () => { AudioSys.click(); setState('title'); } }
-    ];
+    menuButtons = stack([{ label: '返回标题', action: () => { AudioSys.click(); setState('title'); } }], H * 0.90);
   }
-  top = 0;
-  void top;
 }
 
 function settingsLayout() {
@@ -5090,6 +5112,12 @@ function handleCanvasPress(x, y) {
     return false;
   }
   if (GAME.state === 'playing') return false;
+  for (const b of menuButtons) {
+    if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
+      b.action();
+      return true;
+    }
+  }
   if (GAME.state === 'hangar') {
     const L = hangarLayout();
     const ids = Object.keys(PLANE_DEFS);
@@ -5142,12 +5170,6 @@ function handleCanvasPress(x, y) {
       } else {
         addToast('通关前一任务解锁', '#ff9f43', 16);
       }
-      return true;
-    }
-  }
-  for (const b of menuButtons) {
-    if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) {
-      b.action();
       return true;
     }
   }
