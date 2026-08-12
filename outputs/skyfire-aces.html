@@ -2169,11 +2169,31 @@ function spawnAce() {
 }
 
 // ---------- particles ----------
+const PARTICLE_LIMIT = 600;
+const PARTICLE_SOFT_LIMIT = 480;
+const IMPORTANT_PARTICLE_TYPES = new Set(['text', 'ring', 'flash']);
+let particlePressureT = 0;
+
+function particlePriority(p) {
+  return IMPORTANT_PARTICLE_TYPES.has(p.type) ? 2 : (p.type === 'smoke' ? 0 : 1);
+}
+
 function addParticle(p) {
-  if (particles.length >= 720) {
-    // 超限时整批丢弃最旧的一半(摊还 O(1),避免每 push 一次就 splice 头部)
-    particles.splice(0, particles.length - 360);
+  // 进入高压后短暂抑制低优先级尾迹；这也让高压池清空后的观察窗口不被新尾迹污染。
+  if (particles.length >= PARTICLE_SOFT_LIMIT) particlePressureT = Math.max(particlePressureT, 0.25);
+  if (p.type === 'smoke' && (particles.length >= PARTICLE_SOFT_LIMIT || particlePressureT > 0)) return;
+  if (particles.length >= PARTICLE_LIMIT) {
+    // 批量清到软上限，优先淘汰 smoke/普通特效，保留文字、ring、flash 等关键反馈。
+    const incomingPriority = particlePriority(p);
+    const removeCount = particles.length - PARTICLE_SOFT_LIMIT + 1;
+    const order = particles.map((item, index) => ({ index, priority: particlePriority(item) }))
+      .sort((a, b) => a.priority - b.priority || a.index - b.index);
+    const removable = order.filter(item => item.priority <= incomingPriority).slice(0, removeCount);
+    if (removable.length < removeCount && incomingPriority < 2) return;
+    const remove = new Set((removable.length >= removeCount ? removable : order.slice(0, removeCount)).map(item => item.index));
+    particles = particles.filter((_, index) => !remove.has(index));
   }
+  if (!(p.maxLife > 0)) p.maxLife = Math.max(Number.EPSILON, p.life || 0);
   particles.push(p);
 }
 
@@ -3447,6 +3467,7 @@ function startMission(index, mode) {
   bullets = []; missiles = []; particles = []; pickups = []; enemies = []; allies = [];
   const def = MISSION_DEFS[index];
   generateWorld(def.theme, def.seed);
+  ensureRenderCache(world.theme);
   player.x = world.W / 2;
   player.y = world.H / 2;
   player.heading = -Math.PI / 2;
@@ -3486,6 +3507,7 @@ function startMission(index, mode) {
   else if (def.type === 'race') startRace(mission);
   if (typeof ChapterCard !== 'undefined' && (def.chapter || 0) > save.chapterCleared && GAME.mode === 'campaign') ChapterCard.start(def.chapter);
   setState('playing');
+  prewarmRender();
 }
 
 function startEndless() {
@@ -3500,6 +3522,7 @@ function startEndless() {
   GAME.reviveCount = 3; GAME.revivesUsed = 0; GAME.unlimitedRevive = false;
   bullets = []; missiles = []; particles = []; pickups = []; enemies = []; allies = [];
   generateWorld(pick(['day', 'sunset', 'night']), Math.floor(Math.random() * 99999));
+  ensureRenderCache(world.theme);
   player.x = world.W / 2; player.y = world.H / 2;
   player.heading = -Math.PI / 2; player.speed = 200;
   player.hp = player.maxHp; player.missiles = player.maxMissiles;
@@ -3525,6 +3548,7 @@ function startEndless() {
   spawnWave(['fighter', 'fighter']);
   mission.spawned = 2;
   setState('playing');
+  prewarmRender();
 }
 
 // ============================================================
@@ -4883,12 +4907,36 @@ function updateCamera(dt) {
 }
 
 // ---------- drawing ----------
+const renderCache = { w: 0, h: 0, dpr: 0, theme: null, water: null, sun: null };
+
+function ensureRenderCache(theme) {
+  if (renderCache.w === W && renderCache.h === H && renderCache.dpr === DPR && renderCache.theme === theme && renderCache.water && renderCache.sun) return;
+  renderCache.w = W; renderCache.h = H; renderCache.dpr = DPR; renderCache.theme = theme;
+  const makeLayer = () => { const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(W * DPR)); c.height = Math.max(1, Math.round(H * DPR)); const g = c.getContext('2d'); g.setTransform(DPR, 0, 0, DPR, 0, 0); return { c, g }; };
+  const water = makeLayer();
+  const wg = water.g;
+  const grad = wg.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, theme.waterTop); grad.addColorStop(1, theme.waterBottom);
+  wg.fillStyle = grad; wg.fillRect(0, 0, W, H);
+  renderCache.water = water.c;
+  const sun = makeLayer();
+  const sg = sun.g, sx = W * 0.78, sy = H * 0.16;
+  const glow = sg.createRadialGradient(sx, sy, 0, sx, sy, 220);
+  glow.addColorStop(0, theme.sun); glow.addColorStop(0.25, theme.sunGlow); glow.addColorStop(1, 'rgba(255,255,255,0)');
+  sg.fillStyle = glow; sg.beginPath(); sg.arc(sx, sy, 220, 0, TAU); sg.fill();
+  sg.fillStyle = theme.sun; sg.beginPath(); sg.arc(sx, sy, 34, 0, TAU); sg.fill();
+  renderCache.sun = sun.c;
+}
+
+function prewarmRender() {
+  // drawIslands 使用岛屿 seed 的局部 RNG；完整预热不会消费玩法 Math.random 序列。
+  ensureRenderCache(world.theme);
+  draw();
+}
+
 function drawWater(theme) {
-  const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0, theme.waterTop);
-  g.addColorStop(1, theme.waterBottom);
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, W, H);
+  ensureRenderCache(theme);
+  ctx.drawImage(renderCache.water, 0, 0, W, H);
   ctx.strokeStyle = theme.wave;
   ctx.lineWidth = 1;
   const step = 56;
@@ -4932,7 +4980,7 @@ function drawIslands() {
       const tx = isl.cx + Math.cos(a) * rr, ty = isl.cy + Math.sin(a) * rr;
       ctx.fillStyle = t.tree;
       ctx.beginPath();
-      ctx.arc(tx, ty, rand(7, 14), 0, TAU);
+      ctx.arc(tx, ty, 7 + r() * 7, 0, TAU);
       ctx.fill();
     }
     if (isl.city && t.city) {
@@ -4940,7 +4988,7 @@ function drawIslands() {
         const a = r() * TAU, rr = r() * isl.rad * 0.72;
         const bx = isl.cx + Math.cos(a) * rr, by = isl.cy + Math.sin(a) * rr;
         ctx.fillStyle = t.city;
-        ctx.globalAlpha = rand(0.35, 0.95);
+        ctx.globalAlpha = 0.35 + r() * 0.6;
         ctx.fillRect(bx, by, 5, 5);
       }
       ctx.globalAlpha = 1;
@@ -4967,19 +5015,8 @@ function drawClouds() {
 
 function drawSun() {
   const t = world.theme;
-  const sx = W * 0.78, sy = H * 0.16;
-  const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, 220);
-  g.addColorStop(0, t.sun);
-  g.addColorStop(0.25, t.sunGlow);
-  g.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = g;
-  ctx.beginPath();
-  ctx.arc(sx, sy, 220, 0, TAU);
-  ctx.fill();
-  ctx.fillStyle = t.sun;
-  ctx.beginPath();
-  ctx.arc(sx, sy, 34, 0, TAU);
-  ctx.fill();
+  ensureRenderCache(t);
+  ctx.drawImage(renderCache.sun, 0, 0, W, H);
 }
 
 function drawPlaneShape(p) {
@@ -5471,8 +5508,14 @@ function drawLockIndicator() {
   }
 }
 
+function inDrawView(x, y, margin) {
+  const viewR = Math.hypot(W, H) / cam.zoom * 0.58 + (margin || 0);
+  return Math.abs(x - cam.x) <= viewR && Math.abs(y - cam.y) <= viewR;
+}
+
 function drawParticles() {
   for (const p of particles) {
+    if (!inDrawView(p.x, p.y, (p.size || 0) * 2 + 80)) continue;
     const lifeRatio = p.life / p.maxLife;
     if (p.type === 'fire') {
       ctx.globalCompositeOperation = 'lighter';
@@ -5545,6 +5588,7 @@ function drawParticles() {
 }
 
 function updateParticles(dt) {
+  particlePressureT = Math.max(0, particlePressureT - dt);
   for (let i = particles.length - 1; i >= 0; i--) {
     const p = particles[i];
     p.x += p.vx * dt;
@@ -5570,6 +5614,7 @@ function updateParticles(dt) {
 function drawBullets() {
   for (const b of bullets) {
     if (b.life <= 0) continue; // 已失效(复活清弹标记)不再绘制,下帧由 updateBullets 清除
+    if (!inDrawView(b.x, b.y, 80)) continue;
     ctx.strokeStyle = b.fromPlayer ? '#ffe9a0' : '#ff6b5e';
     ctx.lineWidth = 3;
     ctx.globalCompositeOperation = 'lighter';
@@ -5584,6 +5629,7 @@ function drawBullets() {
 function drawMissiles() {
   for (const m of missiles) {
     if (m.life <= 0) continue; // 已失效(复活清弹标记)不再绘制
+    if (!inDrawView(m.x, m.y, 100)) continue;
     const dirx = Math.cos(m.heading), diry = Math.sin(m.heading);
     ctx.save();
     ctx.translate(m.x, m.y);
@@ -5606,6 +5652,7 @@ function drawMissiles() {
 
 function drawPickups() {
   for (const p of pickups) {
+    if (!inDrawView(p.x, p.y, 80)) continue;
     const bob = Math.sin(p.t * 4) * 4;
     let color, label, size = 14;
     if (p.type === 'buff') {
@@ -5736,8 +5783,9 @@ function drawWorld() {
   ctx.translate(-cam.x + cam.shakeX, -cam.y + cam.shakeY);
   drawIslands();
   drawClouds();
-  for (const a of allies) drawPlaneShape(a);
+  for (const a of allies) if (inDrawView(a.x, a.y, 140)) drawPlaneShape(a);
   for (const e of enemies) {
+    if (!inDrawView(e.x, e.y, e.dead ? 220 : 140)) continue;
     ctx.save();
     if (e.dead) {
       ctx.globalAlpha = e.wreckDone ? Math.max(0, 1 - e.wreckFade) : 0.9;
