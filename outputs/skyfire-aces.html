@@ -2143,7 +2143,7 @@ function spawnWave(kinds) {
 function spawnTransport() {
   const t = {
     kind: 'transport', x: 700, y: world.H / 2, heading: 0, speed: 128,
-    hp: 320, maxHp: 320, r: 44, waypoints: [
+    hp: 320, maxHp: 320, r: 44, alive: true, dead: false, waypoints: [
       { x: 700, y: world.H / 2 },
       { x: 2100, y: world.H / 2 + 300 },
       { x: 3800, y: world.H / 2 - 220 },
@@ -2282,6 +2282,7 @@ function explode(x, y, power, big) {
 
 // ---------- damage helpers ----------
 function damagePlane(p, dmg) {
+  if (p && p.kind === 'wingman') return damageWingman(p, dmg);
   dmg *= (p.takeDmgMult || 1);
   p.hp -= dmg;
   p.hitFlash = 0.12;
@@ -2374,6 +2375,7 @@ function damagePlane(p, dmg) {
 
 
 function killPlane(p) {
+  if (p && p.kind === 'wingman') return damageWingman(p, Math.max(1, p.hp || WINGMAN_CONFIG.maxHp));
   p.dead = true;
   const big = p.kind === 'bomber' || p.kind === 'transport' || p.kind === 'ace' || p.kind === 'gunship' || p.kind === 'eye' || p.kind === 'king';
   explode(p.x, p.y, big ? 22 : 12, big);
@@ -2430,7 +2432,7 @@ function killPlane(p) {
   if (Math.random() < 0.32) {
     pickups.push({
       x: p.x, y: p.y, vx: rand(-30, 30), vy: rand(-30, 30),
-      type: pick(GAME.mode === 'endless' ? ['repair', 'missiles', 'score', 'repair', 'revive'] : ['repair', 'missiles', 'score']), life: 18, t: rand(0, 3)
+      type: pick(GAME.mode === 'endless' ? ['repair', 'missiles', 'score', 'revive'] : ['repair', 'missiles', 'score', 'wingman']), life: 18, t: rand(0, 3)
     });
   }
   if (GAME.mode === 'endless') dropLoot(p.x, p.y);
@@ -2511,6 +2513,268 @@ function hurtPlayer(dmg) {
   damagePlane(player, mitigated);
   player.hitFlash = Math.max(player.hitFlash, 0.3);
   cam.shake = Math.min(24, cam.shake + 8);
+}
+
+// ---------- P26 僚机核心（吸收 P24，评级统计适配） ----------
+/*
+ * Wingman core AI fragment for Skyfire Aces.
+ * Browser globals read: player, allies, enemies, bullets; optional GAME,
+ * explode, burstDebris. No DOM, canvas, audio, storage, or mission dependency.
+ * Integration-owned collision code may use bullet.fromPlayer === true for normal
+ * enemy damage/score flow; bullet.source/owner/creditPlayer identify wingman kills.
+ */
+
+const WINGMAN_CONFIG = Object.freeze({
+  maxCount: 2,
+  maxHp: 60,
+  damageRatio: 0.35,
+  fireCd: 0.28,
+  targetRange: 1100,
+  followBehind: 95,
+  followSide: 72,
+  breakDistance: 520,
+  cruiseSpeed: 260,
+  catchupSpeed: 430,
+  acceleration: 520,
+  turnRate: 4.2,
+  fullRepair: 30,
+  boostDuration: 8,
+  boostRate: 1.25,
+  bulletSpeed: 900,
+  bulletLife: 1.25,
+  bulletSize: 4,
+  collideDamage: 20,
+  collideCooldown: 0.5
+});
+
+function wingmanFinite(value, fallback) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function wingmanAngleDiff(from, to) {
+  let d = (to - from) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
+function wingmanLiveList() {
+  return typeof allies !== 'undefined' && Array.isArray(allies) ? allies : null;
+}
+
+function wingmanFormationPoint(slot) {
+  const heading = wingmanFinite(player && player.heading, 0);
+  const side = slot === 1 ? 1 : -1;
+  const forwardX = Math.cos(heading);
+  const forwardY = Math.sin(heading);
+  const leftX = -forwardY;
+  const leftY = forwardX;
+  return {
+    side,
+    x: wingmanFinite(player && player.x, 0) - forwardX * WINGMAN_CONFIG.followBehind + leftX * side * WINGMAN_CONFIG.followSide,
+    y: wingmanFinite(player && player.y, 0) - forwardY * WINGMAN_CONFIG.followBehind + leftY * side * WINGMAN_CONFIG.followSide
+  };
+}
+
+function makeWingman(slot) {
+  const normalizedSlot = slot === 1 ? 1 : 0;
+  const formation = wingmanFormationPoint(normalizedSlot);
+  return {
+    kind: 'wingman',
+    slot: normalizedSlot,
+    formationSide: formation.side,
+    x: formation.x,
+    y: formation.y,
+    formationX: formation.x,
+    formationY: formation.y,
+    heading: wingmanFinite(player && player.heading, 0),
+    speed: wingmanFinite(player && player.speed, WINGMAN_CONFIG.cruiseSpeed),
+    maxSpeed: WINGMAN_CONFIG.cruiseSpeed,
+    hp: WINGMAN_CONFIG.maxHp,
+    maxHp: WINGMAN_CONFIG.maxHp,
+    r: 14,
+    fireCd: 0,
+    rateBoostT: 0,
+    target: null,
+    dead: false,
+    alive: true,
+    catchingUp: false,
+    hitFlash: 0,
+    smokeT: 0,
+    collideCd: 0,
+    color: '#55e6c1',
+    tipColor: '#ffd166'
+  };
+}
+
+function summonWingman() {
+  const list = wingmanLiveList();
+  if (!list) return { action: 'unavailable', wingman: null };
+  const formation = list.filter(a => a && a.kind === 'wingman' && !a.dead);
+  if (formation.length < WINGMAN_CONFIG.maxCount) {
+    const used = new Set(formation.map(w => w.slot));
+    const slot = used.has(0) ? 1 : 0;
+    const wingman = makeWingman(slot);
+    list.push(wingman);
+    return { action: 'added', wingman };
+  }
+  for (const wingman of formation) {
+    wingman.maxHp = WINGMAN_CONFIG.maxHp;
+    wingman.hp = Math.min(wingman.maxHp, Math.max(0, wingmanFinite(wingman.hp, 0)) + WINGMAN_CONFIG.fullRepair);
+    wingman.rateBoostT = WINGMAN_CONFIG.boostDuration;
+  }
+  return { action: 'boosted', wingmen: formation };
+}
+
+function acquireWingmanTarget(w) {
+  if (!w || w.kind !== 'wingman' || w.dead || typeof enemies === 'undefined' || !Array.isArray(enemies)) return null;
+  let nearest = null;
+  let nearestD2 = WINGMAN_CONFIG.targetRange * WINGMAN_CONFIG.targetRange;
+  for (const enemy of enemies) {
+    if (!enemy || enemy.dead || enemy.hp <= 0 || enemy.kind === 'transport') continue;
+    const dx = wingmanFinite(enemy.x, Infinity) - w.x;
+    const dy = wingmanFinite(enemy.y, Infinity) - w.y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 <= nearestD2) {
+      nearestD2 = d2;
+      nearest = enemy;
+    }
+  }
+  w.target = nearest;
+  return nearest;
+}
+
+function fireWingmanGun(w) {
+  if (!w || w.kind !== 'wingman' || w.dead || wingmanFinite(w.fireCd, 0) > 0 || typeof bullets === 'undefined' || !Array.isArray(bullets)) return null;
+  const target = w.target && !w.target.dead && w.target.hp > 0 ? w.target : acquireWingmanTarget(w);
+  if (!target) return null;
+  const dx = target.x - w.x;
+  const dy = target.y - w.y;
+  if (dx * dx + dy * dy > WINGMAN_CONFIG.targetRange * WINGMAN_CONFIG.targetRange) {
+    w.target = null;
+    return null;
+  }
+  const angle = Math.atan2(dy,dx);
+  const weapon = player && player.weapon ? player.weapon : null;
+  const baseDamage = wingmanFinite(weapon && weapon.dmg, 20);
+  const speed = wingmanFinite(weapon && weapon.speed, WINGMAN_CONFIG.bulletSpeed);
+  const boost = wingmanFinite(w.rateBoostT, 0) > 0 ? WINGMAN_CONFIG.boostRate : 1;
+  w.fireCd = WINGMAN_CONFIG.fireCd / boost;
+  w.heading = angle;
+  const bullet = {
+    x: w.x + Math.cos(angle) * 22,
+    y: w.y + Math.sin(angle) * 22,
+    vx: Math.cos(angle) * speed + Math.cos(w.heading) * wingmanFinite(w.speed, 0) * 0.7,
+    vy: Math.sin(angle) * speed + Math.sin(w.heading) * wingmanFinite(w.speed, 0) * 0.7,
+    life: wingmanFinite(weapon && weapon.life, WINGMAN_CONFIG.bulletLife),
+    r: wingmanFinite(weapon && weapon.size, WINGMAN_CONFIG.bulletSize),
+    dmg: Math.max(1, Math.round(baseDamage * WINGMAN_CONFIG.damageRatio)),
+    enemy: false,
+    fromPlayer: true,
+    source: 'wingman',
+    owner: w,
+    creditPlayer: true,
+    pierce: 0,
+    blast: 0
+  };
+  bullets.push(bullet);
+  // 僚机射击不污染玩家评级/命中统计。
+  return bullet;
+}
+
+function updateWingman(w, dt) {
+  if (!w || w.kind !== 'wingman' || w.dead || typeof dt !== 'number' || !Number.isFinite(dt) || dt <= 0) return;
+  if (typeof player === 'undefined' || !player || player.dead || player.alive === false) return;
+
+  w.fireCd = Math.max(0, wingmanFinite(w.fireCd, 0) - dt);
+  w.rateBoostT = Math.max(0, wingmanFinite(w.rateBoostT, 0) - dt);
+  w.hitFlash = Math.max(0, wingmanFinite(w.hitFlash, 0) - dt);
+
+  const formation = wingmanFormationPoint(w.slot);
+  w.formationSide = formation.side;
+  w.formationX = formation.x;
+  w.formationY = formation.y;
+  const dx = formation.x - w.x;
+  const dy = formation.y - w.y;
+  const distance = Math.hypot(dx, dy);
+  w.catchingUp = distance > WINGMAN_CONFIG.breakDistance;
+  const desiredHeading = distance > 2 ? Math.atan2(dy,dx) : wingmanFinite(player.heading, w.heading);
+  const turn = Math.max(-WINGMAN_CONFIG.turnRate * dt,
+    Math.min(WINGMAN_CONFIG.turnRate * dt, wingmanAngleDiff(wingmanFinite(w.heading, 0), desiredHeading)));
+  w.heading = wingmanFinite(w.heading, 0) + turn;
+
+  const playerSpeed = wingmanFinite(player.speed, WINGMAN_CONFIG.cruiseSpeed);
+  const desiredSpeed = w.catchingUp
+    ? WINGMAN_CONFIG.catchupSpeed
+    : Math.min(WINGMAN_CONFIG.cruiseSpeed, Math.max(120, playerSpeed + Math.min(distance, 140)));
+  const currentSpeed = wingmanFinite(w.speed, playerSpeed);
+  const speedStep = WINGMAN_CONFIG.acceleration * dt;
+  w.speed = currentSpeed < desiredSpeed
+    ? Math.min(desiredSpeed, currentSpeed + speedStep)
+    : Math.max(desiredSpeed, currentSpeed - speedStep);
+  w.x += Math.cos(w.heading) * w.speed * dt;
+  w.y += Math.sin(w.heading) * w.speed * dt;
+
+  if (!w.target || w.target.dead || w.target.hp <= 0 || Math.hypot(w.target.x - w.x, w.target.y - w.y) > WINGMAN_CONFIG.targetRange) {
+    acquireWingmanTarget(w);
+  }
+  if (w.target) fireWingmanGun(w);
+}
+
+function removeWingman(w) {
+  if (!w || w.kind !== 'wingman') return false;
+  const list = wingmanLiveList();
+  if (!list) return false;
+  const index = list.indexOf(w);
+  if (index < 0) return false;
+  list.splice(index, 1);
+  return true;
+}
+
+function damageWingman(w, dmg) {
+  if (!w || w.kind !== 'wingman' || w.dead || typeof dmg !== 'number' || !Number.isFinite(dmg) || dmg <= 0) return false;
+  w.hp = Math.max(0, wingmanFinite(w.hp, WINGMAN_CONFIG.maxHp) - dmg);
+  w.hitFlash = 0.12;
+  if (w.hp > 0) return false;
+  w.dead = true;
+  w.alive = false;
+  w.target = null;
+  if (typeof explode === 'function') explode(w.x, w.y, 8, false);
+  if (typeof burstDebris === 'function') burstDebris(w.x, w.y, 4, false);
+  removeWingman(w);
+  return true;
+}
+
+// 敌机实体碰撞伤害：只检测存活敌机 × 存活僚机(最多 2 架)；
+// 伤害唯一入口为 damageWingman()，不进入玩家/运输机/敌机计分链。
+// 接触锁为僚机上的有界标量 collideCd：命中后冷却期内不重复结算；
+// 与所有存活敌机分离(不再重叠)时锁归零，死亡/移除后锁随对象消失。
+function updateWingmanCollisions(dt) {
+  if (typeof dt !== 'number' || !Number.isFinite(dt) || dt <= 0) return;
+  if (typeof enemies === 'undefined' || !Array.isArray(enemies)) return;
+  const list = wingmanLiveList();
+  if (!list) return;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const w = list[i];
+    if (!w || w.kind !== 'wingman' || w.dead) continue;
+    w.collideCd = Math.max(0, wingmanFinite(w.collideCd, 0) - dt);
+    let touching = false;
+    for (const e of enemies) {
+      if (!e || e.dead || e.hp <= 0) continue;
+      const dx = e.x - w.x;
+      const dy = e.y - w.y;
+      const hitR = wingmanFinite(e.r, 22) + wingmanFinite(w.r, 14);
+      const d2 = dx * dx + dy * dy;
+      if (d2 < hitR * hitR) {
+        touching = true;
+        if (w.collideCd <= 0) {
+          w.collideCd = WINGMAN_CONFIG.collideCooldown;
+          if (damageWingman(w, WINGMAN_CONFIG.collideDamage)) break;
+        }
+      }
+    }
+    if (!touching) w.collideCd = 0;
+  }
 }
 
 // ---------- updates ----------
@@ -2779,7 +3043,7 @@ function updateBullets(dt) {
               }
             }
             burstSpark(b.x, b.y, 3, 130, 0.25);
-            GAME.shotsHit++;
+            if (b.source !== 'wingman') GAME.shotsHit++;
             b.hitCount++;
             if (!b.pierce || b.hitCount > b.pierce) dead = true;
             break;
@@ -2790,6 +3054,7 @@ function updateBullets(dt) {
           if (t.dead || !t.alive) continue;
           if (dist2(b.x, b.y, t.x, t.y) < (t.r + 8) * (t.r + 8)) {
             if (t === player) hurtPlayer(b.dmg);
+            else if (t.kind === 'wingman') damageWingman(t, b.dmg);
             else damagePlane(t, b.dmg);
             burstSpark(b.x, b.y, 3, 130, 0.25);
             dead = true;
@@ -2846,6 +3111,7 @@ function updateMissiles(dt) {
           const d = dist(m.x, m.y, t.x, t.y);
           if (d < CFG.missileBlast + t.r) {
             if (t === player) hurtPlayer(m.damage * 0.8);
+            else if (t.kind === 'wingman') damageWingman(t, m.damage);
             else damagePlane(t, m.damage);
           }
         }
@@ -2898,7 +3164,18 @@ function enemyFireMissile(e, dt) {
   }
 }
 
+function chooseEnemyTarget(e, dt) {
+  if (!e || e.dead || ['ace', 'eye', 'king', 'bomber', 'gunship', 'kamikaze'].includes(e.kind)) return player;
+  e.targetPickCd = Math.max(0, (e.targetPickCd || 0) - dt);
+  if (e.aiTarget && !e.aiTarget.dead && e.aiTarget.alive !== false && e.targetPickCd > 0) return e.aiTarget;
+  e.targetPickCd = rand(2.2, 4.2);
+  const wingmen = allies.filter(a => a && a.kind === 'wingman' && !a.dead && a.alive !== false);
+  e.aiTarget = wingmen.length && Math.random() < 0.15 ? pick(wingmen) : player;
+  return e.aiTarget;
+}
+
 function updateEnemy(e, dt) {
+  chooseEnemyTarget(e, dt);
   if (e.dead) return;
   if (e.kind === 'drone') return updateDrone(e, dt);
   if (e.kind === 'kamikaze') return updateKamikaze(e, dt);
@@ -3025,6 +3302,17 @@ function separateEnemies() {
   }
 }
 
+function collectWingmanSupport() {
+  const result = summonWingman();
+  if (result.action === 'added') {
+    addToast('僚机支援已加入编队', '#55e6c1', 17);
+  } else if (result.action === 'boosted') {
+    addToast('僚机满编：修复 +30 · 射速强化 8秒', '#ffd166', 16);
+  }
+  AudioSys.pickup();
+  return result;
+}
+
 function updatePickups(dt) {
   if (GAME.state !== 'playing') return;
   for (let i = pickups.length - 1; i >= 0; i--) {
@@ -3037,7 +3325,8 @@ function updatePickups(dt) {
       if (GAME.mode === 'endless') {
         collectLoot(p);
       } else {
-        if (p.type === 'repair') { player.hp = Math.min(player.maxHp, player.hp + 38); addText(player.x, player.y - 44, '机身修复 +38', '#7ee787', 15); }
+        if (p.type === 'wingman') { collectWingmanSupport(); }
+        else if (p.type === 'repair') { player.hp = Math.min(player.maxHp, player.hp + 38); addText(player.x, player.y - 44, '机身修复 +38', '#7ee787', 15); }
         else if (p.type === 'missiles') { player.missiles = Math.min(player.maxMissiles, player.missiles + 10); addText(player.x, player.y - 44, '导弹 +10', '#7fd4ff', 15); }
         else if (p.type === 'revive') {
           if (GAME.reviveCount < 9) { GAME.reviveCount++; addText(player.x, player.y - 44, '复活次数 +1', '#7ee787', 15); AudioSys.pickup(); }
@@ -3087,6 +3376,10 @@ function makeWeapon(id, quality) {
 function dropLoot(x, y) {
   const r = Math.random();
   if (r < 0.1) return;
+  if (r < 0.2) {
+    pickups.push({ x, y, vx: rand(-30, 30), vy: rand(-30, 30), type: 'wingman', life: 18, t: rand(0, 3) });
+    return;
+  }
   if (r < 0.6) {
     const id = pick(Object.keys(BUFF_DEFS));
     pickups.push({ x, y, vx: rand(-30, 30), vy: rand(-30, 30), type: 'buff', id, life: 18, t: rand(0, 3) });
@@ -3104,7 +3397,9 @@ function dropLoot(x, y) {
 
 function collectLoot(p) {
   GAME.pickupsTaken++;
-  if (p.type === 'buff') {
+  if (p.type === 'wingman') {
+    collectWingmanSupport();
+  } else if (p.type === 'buff') {
     applyBuff(p.id);
   } else if (p.type === 'move') {
     const t = DROP_MOVES[p.id];
@@ -5019,6 +5314,250 @@ function drawSun() {
   ctx.drawImage(renderCache.sun, 0, 0, W, H);
 }
 
+// ---------- P26 僚机视觉（吸收 P25，HUD 安全区适配） ----------
+// P25 僚机视觉纯片段。浏览器集成时依赖主文件已有全局 ctx / W / H。
+// drawWingmanJet 在调用方已 translate/rotate 后的局部坐标中绘制，机头朝 +x。
+const WINGMAN_COLORS = Object.freeze({
+  teal: '#55e6c1',
+  gold: '#ffd166',
+  dark: '#123c3a',
+  canopy: '#163a55',
+  transport: '#4ecb71',
+  danger: '#ff6b6b',
+  panel: 'rgba(6,20,24,0.72)'
+});
+
+const WINGMAN_LAYOUT = Object.freeze({
+  jetNoseX: 31,
+  jetTailX: -25,
+  jetHalfSpan: 23,
+  radarSize: 6,
+  hudWidth: 184,
+  hudBarHeight: 10,
+  hudGap: 7,
+  hudMaxRows: 2,
+  smokeHpRatio: 0.35
+});
+
+function wingmanClamp01(value) {
+  value = Number(value);
+  return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+}
+
+function wingmanHpRatio(w) {
+  if (!w || !(Number(w.maxHp) > 0)) return 0;
+  return wingmanClamp01(Number(w.hp) / Number(w.maxHp));
+}
+
+// 低血量烟迹接口：更新/粒子系统可读取两个局部喷口并转换到世界坐标。
+function getWingmanSmokePorts(w) {
+  if (wingmanHpRatio(w) > WINGMAN_LAYOUT.smokeHpRatio) return [];
+  return [
+    { x: -22, y: -5, color: 'rgba(64,82,78,0.72)' },
+    { x: -22, y: 5, color: 'rgba(64,82,78,0.72)' }
+  ];
+}
+
+function drawWingmanJet(w) {
+  w = w || {};
+  const hpRatio = wingmanHpRatio(w);
+  const flash = wingmanClamp01(w.hitFlash);
+
+  ctx.save();
+  try {
+    ctx.globalAlpha = Number.isFinite(Number(w.alpha)) ? wingmanClamp01(w.alpha) : 1;
+    ctx.shadowBlur = 0;
+
+    // 短后掠翼：刻意区别于自机的长翼轮廓。
+    ctx.fillStyle = WINGMAN_COLORS.teal;
+    ctx.strokeStyle = WINGMAN_COLORS.dark;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(8, -5);
+    ctx.lineTo(-2, -20);
+    ctx.lineTo(-15, -23);
+    ctx.lineTo(-11, -8);
+    ctx.lineTo(-22, -10);
+    ctx.lineTo(-18, -4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(8, 5);
+    ctx.lineTo(-2, 20);
+    ctx.lineTo(-15, 23);
+    ctx.lineTo(-11, 8);
+    ctx.lineTo(-22, 10);
+    ctx.lineTo(-18, 4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // 金色菱形翼尖。
+    ctx.fillStyle = WINGMAN_COLORS.gold;
+    ctx.beginPath();
+    ctx.moveTo(-2, -20); ctx.lineTo(-9, -25); ctx.lineTo(-15, -23); ctx.lineTo(-9, -18);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(-2, 20); ctx.lineTo(-9, 25); ctx.lineTo(-15, 23); ctx.lineTo(-9, 18);
+    ctx.closePath(); ctx.fill();
+
+    // 细长六边形机身。
+    ctx.fillStyle = WINGMAN_COLORS.teal;
+    ctx.strokeStyle = WINGMAN_COLORS.dark;
+    ctx.beginPath();
+    ctx.moveTo(31, 0);
+    ctx.lineTo(10, -6);
+    ctx.lineTo(-18, -6);
+    ctx.lineTo(-25, -3);
+    ctx.lineTo(-25, 3);
+    ctx.lineTo(-18, 6);
+    ctx.lineTo(10, 6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // 双垂尾（俯视投影为两片独立梯形）。
+    ctx.fillStyle = WINGMAN_COLORS.gold;
+    ctx.beginPath();
+    ctx.moveTo(-10, -5); ctx.lineTo(-18, -13); ctx.lineTo(-23, -11); ctx.lineTo(-19, -4);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(-10, 5); ctx.lineTo(-18, 13); ctx.lineTo(-23, 11); ctx.lineTo(-19, 4);
+    ctx.closePath(); ctx.fill();
+
+    // 座舱与中轴金线。
+    ctx.fillStyle = WINGMAN_COLORS.canopy;
+    ctx.beginPath();
+    ctx.ellipse(8, 0, 8, 3.8, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = WINGMAN_COLORS.gold;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(25, 0); ctx.lineTo(-17, 0);
+    ctx.stroke();
+
+    // 受击闪烁：由 hitFlash(0..1) 驱动，不依赖时间全局。
+    if (flash > 0) {
+      ctx.globalAlpha = flash * 0.72;
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.moveTo(31, 0); ctx.lineTo(7, -8); ctx.lineTo(-18, -6);
+      ctx.lineTo(-25, 0); ctx.lineTo(-18, 6); ctx.lineTo(7, 8);
+      ctx.closePath(); ctx.fill();
+    }
+
+    // 低血量状态灯；烟粒子位置由 getWingmanSmokePorts 提供。
+    if (hpRatio <= WINGMAN_LAYOUT.smokeHpRatio) {
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = WINGMAN_COLORS.danger;
+      ctx.beginPath(); ctx.arc(-15, 0, 2.2, 0, Math.PI * 2); ctx.fill();
+    }
+  } finally {
+    ctx.restore();
+  }
+}
+
+// 在已换算好的雷达屏幕坐标绘制标记。
+// kind='transport' 保持旧版绿色方块；其余僚机为青绿菱形，heading 可选。
+function drawWingmanRadarBlip(x, y, size, kind, heading) {
+  if (x && typeof x === 'object') {
+    const o = x;
+    x = o.x; y = o.y; size = o.size; kind = o.kind; heading = o.heading;
+  }
+  x = Number(x) || 0;
+  y = Number(y) || 0;
+  size = Math.max(3, Number(size) || WINGMAN_LAYOUT.radarSize);
+
+  ctx.save();
+  try {
+    ctx.globalAlpha = 1;
+    ctx.shadowBlur = 0;
+    if (kind === 'transport') {
+      ctx.fillStyle = WINGMAN_COLORS.transport;
+      ctx.fillRect(x - size / 2, y - size / 2, size, size);
+      return;
+    }
+    ctx.translate(x, y);
+    if (Number.isFinite(Number(heading))) ctx.rotate(Number(heading));
+    ctx.fillStyle = WINGMAN_COLORS.teal;
+    ctx.strokeStyle = WINGMAN_COLORS.gold;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(size, 0);
+    ctx.lineTo(0, -size * 0.72);
+    ctx.lineTo(-size, 0);
+    ctx.lineTo(0, size * 0.72);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  } finally {
+    ctx.restore();
+  }
+}
+
+function wingmanRoundRect(x, y, w, h, r) {
+  const rr = Math.max(0, Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+// 右上角最多两条紧凑僚机血条；运输机仍由主 HUD 负责。
+function drawWingmanHud(allies) {
+  const list = Array.isArray(allies)
+    ? allies.filter(function (a) { return a && !a.dead && a.kind === 'wingman'; }).slice(0, WINGMAN_LAYOUT.hudMaxRows)
+    : [];
+  if (!list.length) return 0;
+
+  const width = WINGMAN_LAYOUT.hudWidth;
+  const barH = WINGMAN_LAYOUT.hudBarHeight;
+  const rowH = 28;
+  const x = 18;
+  const y = (typeof input !== 'undefined' && input.isTouch) ? Math.max(112, (Number(H) || 0) * 0.18) : 112;
+
+  ctx.save();
+  try {
+    ctx.globalAlpha = 1;
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = WINGMAN_COLORS.panel;
+    wingmanRoundRect(x - 8, y - 8, width + 16, list.length * rowH + 10, 7);
+    ctx.fill();
+
+    list.forEach(function (a, index) {
+      const yy = y + index * rowH;
+      const ratio = wingmanHpRatio(a);
+      const label = String(a.name || ('僚机 ' + (index + 1))).slice(0, 12);
+      ctx.font = '600 11px "Microsoft YaHei", sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillStyle = WINGMAN_COLORS.teal;
+      ctx.fillText(label, x, yy + 9);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = ratio <= WINGMAN_LAYOUT.smokeHpRatio ? WINGMAN_COLORS.danger : WINGMAN_COLORS.gold;
+      ctx.fillText(Math.round(ratio * 100) + '%', x + width, yy + 9);
+
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      wingmanRoundRect(x, yy + 13, width, barH, 3);
+      ctx.fill();
+      ctx.fillStyle = ratio <= WINGMAN_LAYOUT.smokeHpRatio ? WINGMAN_COLORS.danger : WINGMAN_COLORS.teal;
+      wingmanRoundRect(x, yy + 13, width * ratio, barH, 3);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,209,102,0.5)';
+      ctx.lineWidth = 1;
+      wingmanRoundRect(x, yy + 13, width, barH, 3);
+      ctx.stroke();
+    });
+  } finally {
+    ctx.restore();
+  }
+  return list.length;
+}
+
 function drawPlaneShape(p) {
   ctx.save();
   ctx.translate(p.x, p.y);
@@ -5030,6 +5569,8 @@ function drawPlaneShape(p) {
   ctx.scale(p.kind === 'transport' ? 1.25 : 1, 1);
   if (p.kind === 'player') {
     drawPlayerJet(p);
+  } else if (p.kind === 'wingman') {
+    drawWingmanJet(p);
   } else if (p.kind === 'transport') {
     drawTransportJet(p);
   } else if (p.kind === 'bomber') {
@@ -5667,6 +6208,9 @@ function drawPickups() {
     } else if (p.type === 'revive') {
       color = '#7ee787';
       label = '复';
+    } else if (p.type === 'wingman') {
+      color = '#55e6c1';
+      label = '援';
     } else {
       color = '#dfe9f2';
       label = '?';
@@ -5675,8 +6219,8 @@ function drawPickups() {
     ctx.translate(p.x, p.y + bob);
     ctx.rotate(p.t * 0.8);
     ctx.fillStyle = color;
-    ctx.strokeStyle = '#1c2430';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = p.type === 'wingman' ? '#ffd166' : '#1c2430';
+    ctx.lineWidth = p.type === 'wingman' ? 3 : 2;
     ctx.beginPath();
     ctx.moveTo(0, -size); ctx.lineTo(size, 0); ctx.lineTo(0, size); ctx.lineTo(-size, 0);
     ctx.closePath();
@@ -5963,6 +6507,8 @@ function drawHUD() {
     drawHudBar(W / 2 - bw / 2, pad + 34 * hudScale, bw, 14 * hudScale, m.transport.hp / m.transport.maxHp, '#4ecb71', 'rgba(8,14,22,0.72)', '铁鸟 机身', Math.round(m.transport.hp) + '/' + m.transport.maxHp);
   }
 
+  drawWingmanHud(allies);
+
   // bottom-left status
   const blX = pad, blY = H - pad - 108 * hudScale;
   ctx.fillStyle = 'rgba(6,14,24,0.58)';
@@ -6032,13 +6578,18 @@ function drawHUD() {
     ctx.fillStyle = color;
     if (shape === 'square') {
       ctx.fillRect(rx + rx2 - size / 2, ry + ry2 - size / 2, size, size);
+    } else if (shape === 'wingman') {
+      drawWingmanRadarBlip(rx + rx2, ry + ry2, size, 'wingman', -Math.PI / 2);
     } else {
       ctx.beginPath();
       ctx.arc(rx + rx2, ry + ry2, size, 0, TAU);
       ctx.fill();
     }
   }
-  for (const a of allies) if (!a.dead) blip(a.x, a.y, '#4ecb71', 5, 'square');
+  for (const a of allies) if (!a.dead) {
+    if (a.kind === 'wingman') blip(a.x, a.y, '#55e6c1', 6, 'wingman');
+    else blip(a.x, a.y, '#4ecb71', 5, 'square');
+  }
   for (const e of enemies) if (!e.dead) blip(e.x, e.y, e === player.target ? '#ff4d4d' : '#ff8a5c', e.kind === 'bomber' || e.kind === 'ace' ? 6 : 4.5);
   for (const p of pickups) blip(p.x, p.y, '#54c7ff', 3.5);
   blip(player.x, player.y, '#ffffff', 4);
@@ -6964,7 +7515,24 @@ function update(dt) {
       acquireLock();
       updateMissionSpawn(dt);
       for (const e of enemies) if (!e.dead) updateEnemy(e, dt);
+      for (const a of allies) {
+        if (!a || a.kind !== 'wingman' || a.dead) continue;
+        updateWingman(a, dt);
+        if (wingmanHpRatio(a) <= WINGMAN_LAYOUT.smokeHpRatio) {
+          a.smokeT = Math.max(0, (a.smokeT || 0) - dt);
+          if (a.smokeT <= 0 && particles.length < PARTICLE_SOFT_LIMIT) {
+            a.smokeT = 0.11;
+            const ca = Math.cos(a.heading), sa = Math.sin(a.heading);
+            for (const port of getWingmanSmokePorts(a)) addParticle({
+              x: a.x + port.x * ca - port.y * sa, y: a.y + port.x * sa + port.y * ca,
+              vx: rand(-12, 12) - ca * a.speed * 0.22, vy: rand(-12, 12) - sa * a.speed * 0.22,
+              life: rand(0.35, 0.65), maxLife: 0.65, size: rand(4, 7), type: 'smoke', color: port.color
+            });
+          }
+        }
+      }
       separateEnemies();
+      updateWingmanCollisions(dt);
       updateBullets(dt);
       updateMissiles(dt);
       updatePickups(dt);
