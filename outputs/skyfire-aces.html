@@ -330,8 +330,11 @@ window.addEventListener('keydown', (e) => {
   input.keys[e.key.toLowerCase()] = true;
   if (code === 'Space') e.preventDefault();
   if (isBound(code, 'mute') && !e.repeat) { AudioSys.toggleMute(); if (typeof MusicSys !== 'undefined' && MusicSys.toggleMute) MusicSys.toggleMute(); }
-  const pauseHit = isBound(code, 'pause') || isBound(code, 'menu');
-  if (pauseHit && !e.repeat) {
+  const menuHit = isBound(code, 'menu');
+  const pauseHit = isBound(code, 'pause');
+  if (menuHit && !e.repeat && GAME.state === 'playing' && upgradeChoice) {
+    skipUpgradeChoice();
+  } else if ((pauseHit || menuHit) && !e.repeat) {
     if (GAME.state === 'playing') setState('paused');
     else if (GAME.state === 'paused') setState('playing');
   }
@@ -3581,6 +3584,13 @@ function applyUpgrade(u) {
   AudioSys.score();
 }
 
+function skipUpgradeChoice() {
+  if (!upgradeChoice) return false;
+  upgradeChoice = null;
+  AudioSys.click();
+  return true;
+}
+
 function updateTransport(dt) {
   const t = mission.transport;
   if (!t || t.dead) return;
@@ -5096,19 +5106,14 @@ function handleCanvasPress(x, y) {
   if (GAME.state === 'settings') return handleSettingsPress(x, y);
   if (upgradeChoice && GAME.state === 'playing') {
     const c = upgradeChoice;
-    const bw = Math.min(720, W * 0.9);
-    const bx = W / 2 - bw / 2, by = H * 0.24;
-    const cardW = Math.min(200, (bw - 80) / 3);
-    const cardH = 130;
-    const gap = Math.min(16, (bw - cardW * 3) / 4);
-    let cx = bx + gap;
+    const L = upgradeChoiceLayout();
     for (let i = 0; i < c.options.length; i++) {
-      if (x >= cx && x <= cx + cardW && y >= by + 110 && y <= by + 110 + cardH) {
+      if (inRect(x, y, L.cards[i])) {
         applyUpgrade(c.options[i]);
         return true;
       }
-      cx += cardW + gap;
     }
+    if (inRect(x, y, L.skip)) return skipUpgradeChoice();
     return false;
   }
   if (GAME.state === 'playing') return false;
@@ -7451,32 +7456,28 @@ function drawPaused() {
 function drawUpgradeChoice() {
   if (!upgradeChoice) return;
   const c = upgradeChoice;
+  const L = upgradeChoiceLayout();
   ctx.fillStyle = 'rgba(4,10,18,0.78)';
   ctx.fillRect(0, 0, W, H);
-  const bw = Math.min(720, W * 0.9);
-  const bx = W / 2 - bw / 2, by = H * 0.24, bh = H * 0.52;
   ctx.fillStyle = 'rgba(10,24,40,0.96)';
   ctx.strokeStyle = 'rgba(255,209,102,0.5)';
   ctx.lineWidth = 2;
-  roundRect(bx, by, bw, bh, 12);
+  roundRect(L.panel.x, L.panel.y, L.panel.w, L.panel.h, 12);
   ctx.fill(); ctx.stroke();
   ctx.textAlign = 'center';
   ctx.fillStyle = '#ffd166';
   ctx.font = '900 ' + Math.round(Math.min(30, W * 0.04)) + 'px "Microsoft YaHei", sans-serif';
-  ctx.fillText('武器补给 · 三选一', W / 2, by + 46);
+  ctx.fillText('武器补给 · 三选一', W / 2, L.panel.y + 42);
   ctx.fillStyle = '#aebecd';
   ctx.font = '500 ' + Math.round(Math.min(14, W * 0.019)) + 'px "Microsoft YaHei", sans-serif';
-  ctx.fillText('Lv.' + GAME.level + ' 选择一项武器，本局生效', W / 2, by + 74);
-  const cardW = Math.min(200, (bw - 80) / 3);
-  const cardH = 130;
-  const gap = Math.min(16, (bw - cardW * 3) / 4);
-  let cx = bx + gap;
+  ctx.fillText('Lv.' + GAME.level + ' 选择一项武器，本局生效', W / 2, L.panel.y + 68);
   for (let i = 0; i < c.options.length; i++) {
     const o = c.options[i];
     const def = DROP_WEAPONS[o.id];
     const wName = QUALITY_NAME[o.quality] + ' ' + def.name;
     const wColor = QUALITY_COLOR[o.quality];
-    const cardX = cx, cardY = by + 110;
+    const card = L.cards[i];
+    const cardX = card.x, cardY = card.y, cardW = card.w, cardH = card.h;
     const hovered = hoverUpgradeCard(cardX, cardY, cardW, cardH);
     ctx.fillStyle = hovered ? 'rgba(30,60,90,0.95)' : 'rgba(16,38,60,0.9)';
     ctx.strokeStyle = hovered ? wColor : 'rgba(140,180,210,0.6)';
@@ -7494,8 +7495,39 @@ function drawUpgradeChoice() {
     ctx.font = '600 ' + Math.round(Math.min(12, W * 0.016)) + 'px "Microsoft YaHei", sans-serif';
     const ammo = Math.max(1, Math.round(def.per * QUALITY_MULT[o.quality]));
     ctx.fillText(def.limited ? '弹药 ×' + ammo : '无限弹药 · 重复可升级', cardX + cardW / 2, cardY + 92);
-    cx += cardW + gap;
   }
+  const skipHovered = inRect(input.mouse.x, input.mouse.y, L.skip);
+  ctx.fillStyle = skipHovered ? 'rgba(62,80,96,0.98)' : 'rgba(35,51,66,0.96)';
+  ctx.strokeStyle = skipHovered ? '#dfe9f2' : 'rgba(174,190,205,0.72)';
+  ctx.lineWidth = skipHovered ? 2.5 : 1.5;
+  roundRect(L.skip.x, L.skip.y, L.skip.w, L.skip.h, 8);
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#dfe9f2';
+  ctx.font = '700 ' + Math.round(Math.min(15, W * 0.02)) + 'px "Microsoft YaHei", sans-serif';
+  ctx.fillText('放弃并保留当前装备', L.skip.x + L.skip.w / 2, L.skip.y + L.skip.h / 2 + 5);
+}
+
+function upgradeChoiceLayout() {
+  const margin = Math.max(8, Math.min(24, W * 0.03));
+  const panelW = Math.min(720, W - margin * 2);
+  const panelX = (W - panelW) / 2;
+  const panelY = Math.max(8, Math.min(H * 0.16, 72));
+  const panelH = Math.min(H - panelY - 8, H < 480 ? 352 : 430);
+  const inner = Math.max(8, Math.min(16, panelW * 0.025));
+  const gap = Math.max(6, Math.min(16, panelW * 0.02));
+  const cardW = (panelW - inner * 2 - gap * 2) / 3;
+  const cardY = panelY + (H < 480 ? 78 : 92);
+  const skipH = Math.max(44, Math.min(52, H * 0.065));
+  const skipY = panelY + panelH - skipH - inner;
+  const cardH = Math.max(112, skipY - gap - cardY);
+  const cards = [];
+  for (let i = 0; i < 3; i++) cards.push({ x: panelX + inner + i * (cardW + gap), y: cardY, w: cardW, h: cardH });
+  const skipW = Math.min(320, panelW - inner * 2);
+  return {
+    panel: { x: panelX, y: panelY, w: panelW, h: panelH },
+    cards,
+    skip: { x: W / 2 - skipW / 2, y: skipY, w: skipW, h: skipH }
+  };
 }
 
 function hoverUpgradeCard(x, y, w, h) {
@@ -7523,6 +7555,7 @@ function update(dt) {
   gameTime += dt;
   const flying = GAME.state === 'playing' && player.alive && mission && !mission.complete && !mission.failed;
   AudioSys.updateEngine(flying ? clamp(player.speed / (CFG.maxSpeed + CFG.abSpeed), 0, 1) : 0);
+  if (GAME.state === 'playing' && upgradeChoice) return;
   updateTransition(dt);
   updateWrecks(dt);
   updateCombo(dt);
