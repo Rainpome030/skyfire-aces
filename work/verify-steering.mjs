@@ -19,6 +19,7 @@ const html = readFileSync(FILE, 'utf8');
 const sha256 = (s) => createHash('sha256').update(s).digest('hex');
 const hashBefore = sha256(html);
 const hasMap = html.includes('function steerStrengthFromPx(');
+const SPEED_SCALE_EXPECT = 0.85; // P34.1-R1: 触屏角速度期望整体 ×0.85(=主文件 STEER_SPEED_SCALE)
 console.log('MODE=' + (hasMap ? 'GREEN' : 'RED') + '  hasMap=' + hasMap);
 
 const checks = [];
@@ -193,8 +194,8 @@ return { active, dir, s, dH };`));
 check('T2c 29px 起转(死区外激活)', t2c.active === true && t2c.dir === 'right' && t2c.dH > 0, `dir=${t2c.dir} dH=${t2c.dH}`);
 check('T2d strength 在场且≈0.35', t2c.s !== null && Math.abs(t2c.s - 0.35) < 0.06, 's29=' + t2c.s);
 {
-  const exp = t2c.s === null ? 2.7 * 1.5 * 0.5 : 2.7 * 1.5 * (0.8 + 1.0 * t2c.s) * 0.5;
-  check('T2e 转角符合 rateMult=lerp(0.8,1.8,strength)×触屏倍率1.5 公式', Math.abs(t2c.dH - exp) < 1e-6, `dH=${t2c.dH} exp=${exp}`);
+  const exp = t2c.s === null ? 2.7 * 1.5 * 0.5 : 2.7 * 1.5 * (0.8 + 1.0 * t2c.s) * 0.5 * SPEED_SCALE_EXPECT;
+  check('T2e 转角符合 rateMult=lerp(0.8,1.8,strength)×0.85×触屏倍率1.5 公式', Math.abs(t2c.dH - exp) < 1e-6, `dH=${t2c.dH} exp=${exp}`);
 }
 
 // T3 距离→转角(40/120/300px)
@@ -218,8 +219,8 @@ return out;`));
   const detail = `a40=${a40.toFixed(4)} a120=${a120.toFixed(4)} a300=${a300.toFixed(4)} s40=${s40} s120=${s120} s300=${s300}`;
   if (hasMap) {
     check('T3a GREEN: 40/120/300px 转角严格递增(连续强度)', a40 < a120 && a120 < a300, detail);
-    const pred = (s) => 2.7 * 1.5 * (0.8 + 1.0 * s) * 0.5;
-    check('T3b GREEN: 三距离转角均符合映射公式', Math.abs(a40 - pred(s40)) < 1e-6 && Math.abs(a120 - pred(s120)) < 1e-6 && Math.abs(a300 - pred(s300)) < 1e-6, detail);
+    const pred = (s) => 2.7 * 1.5 * (0.8 + 1.0 * s) * 0.5 * SPEED_SCALE_EXPECT;
+    check('T3b GREEN: 三距离转角均符合映射公式×0.85(STEER_SPEED_SCALE)', Math.abs(a40 - pred(s40)) < 1e-6 && Math.abs(a120 - pred(s120)) < 1e-6 && Math.abs(a300 - pred(s300)) < 1e-6, detail);
   } else {
     check('T3a RED 现状: 40/120/300px 转角相同(二值门槛)', Math.abs(a40 - a120) < 1e-9 && Math.abs(a120 - a300) < 1e-9 && Math.abs(a40 - 2.025) < 1e-6, detail);
   }

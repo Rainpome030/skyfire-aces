@@ -145,6 +145,7 @@ const STEER_STRENGTH_MIN_PX = 28;       // px(CSS 逻辑像素): 低于此距离
 const STEER_STRENGTH_FULL_RATIO = 0.30; // 有效可玩宽度占比 → strength=1.0
 const STEER_RATE_MIN = 0.8;             // strength=0 端点转向倍率
 const STEER_RATE_MAX = 1.8;             // strength=1 端点转向倍率
+const STEER_SPEED_SCALE = 0.85;        // P34.1-R1: 触屏转向整体速率系数(可调, 1.0=候选A原速; 0.85=整体-15%)
 // 有效可玩宽度 = 视口宽 − 左右安全区 − 右侧固定控制带(复用 P33 safeInsets()/hudRects()); CSS 逻辑像素口径
 function steerEffectiveWidth() {
   const hr = hudRects();
@@ -3086,8 +3087,8 @@ function updatePlayer(dt) {
   // 触屏手势(任务书 20):手势激活时优先级高于键盘/鼠标
   const swipeActive = input.isTouch && touchSwipe.active && touchSwipe.dir;
   if (swipeActive) {
-    // 左/右滑按住 → 转向; P34.1 连续强度: rateMult = lerp(STEER_RATE_MIN, STEER_RATE_MAX, strength), 触屏倍率 1.5 与高速衰减 32% 保持现状
-    const rateMult = lerp(STEER_RATE_MIN, STEER_RATE_MAX, touchSwipe.strength);
+    // 左/右滑按住 → 转向; P34.1 连续强度: rateMult = lerp(STEER_RATE_MIN, STEER_RATE_MAX, strength), 触屏倍率 1.5 与高速衰减 32% 保持现状; P34.1-R1: 整体 ×STEER_SPEED_SCALE(0.85, -15%)
+    const rateMult = lerp(STEER_RATE_MIN, STEER_RATE_MAX, touchSwipe.strength) * STEER_SPEED_SCALE;
     if (touchSwipe.dir === 'left') steerPlane(player, player.heading - Math.PI / 2, dt, 1.5 * rateMult);
     else if (touchSwipe.dir === 'right') steerPlane(player, player.heading + Math.PI / 2, dt, 1.5 * rateMult);
     else player.bank = lerp(player.bank, 0, 1 - Math.exp(-dt * 8));
