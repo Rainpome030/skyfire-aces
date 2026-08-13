@@ -482,8 +482,21 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // ---------- audio ----------
+// ---------- P34.2 命中/击毁音频消费聚合合同 + 引擎声生命周期 + 双路音量 ----------
+const SFX_VOLUME_DEFAULT = 1.0;      // 音效音量默认值(0~1), 可调; 旧存档无字段用此默认
+const ENGINE_VOLUME_DEFAULT = 1.0;   // 引擎音量默认值(0~1), 可调; 旧存档无字段用此默认
+const HIT_SFX_MIN_INTERVAL = 0.06;   // 普通命中音效最小触发间隔(秒), 可调; kill 事件不受此限
+const HIT_SFX_FREQ = 1250;           // 普通命中音效基频(Hz, square 短促高频)
+const HIT_SFX_DUR = 0.05;            // 普通命中音效时长(秒)
+const KILL_SFX_FREQ = 260;           // 击毁音效基频(Hz, sawtooth 下扫, 与命中明显区分)
+const KILL_SFX_DUR = 0.22;           // 击毁音效时长(秒)
+const ENGINE_GAIN_MIN = 0.018;       // 飞行底噪最小增益(与基线一致)
+const ENGINE_GAIN_RANGE = 0.035;     // 飞行底噪随速度增益范围(与基线一致)
+const ENGINE_GAIN_MAX = 0.06;        // 飞行底噪增益上限(防过载), 可调
+const ENGINE_GAIN_TAU = 0.1;         // 引擎增益平滑时间常数(秒, setTargetAtTime), 可调
 const AudioSys = {
   ctx: null, master: null, enabled: true, musicOn: false,
+  paused: false, _lastHitSfxT: -999,   // P34.2: 暂停冻结标志 + hit 音效上次触发时间(gameTime)
   engineOsc: null, engineGain: null, engineFilter: null,
   nextBeat: 0, beat: 0, musicTimer: null,
   init() {
@@ -511,21 +524,31 @@ const AudioSys = {
     this._throttle[name] = now;
     fn();
   },
+  sfxVol() {   // P34.2: 音效通道音量(0~1), 旧存档无字段用默认; 与 master(0.6 总线 + M 键)相乘
+    return (typeof save !== 'undefined' && save && typeof save.sfxVolume === 'number') ? save.sfxVolume : SFX_VOLUME_DEFAULT;
+  },
+  engineVol() {   // P34.2: 引擎通道音量(0~1), 旧存档无字段用默认
+    return (typeof save !== 'undefined' && save && typeof save.engineVolume === 'number') ? save.engineVolume : ENGINE_VOLUME_DEFAULT;
+  },
   tone(freq, dur, type, vol, slide, when) {
-    if (!this.ctx || !this.enabled) return;
+    if (!this.ctx || !this.enabled || this.paused) return;   // P34.2: 暂停冻结全部游戏音效
+    const v = ((vol || 0.15) * this.sfxVol());   // P34.2: 音效通道音量缩放(0 → 不建任何节点)
+    if (v <= 0.0001) return;
     const t = this.ctx.currentTime + (when || 0);
     const o = this.ctx.createOscillator();
     const g = this.ctx.createGain();
     o.type = type || 'sine';
     o.frequency.setValueAtTime(Math.max(20, freq), t);
     if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(20, freq + slide), t + dur);
-    g.gain.setValueAtTime(vol || 0.15, t);
+    g.gain.setValueAtTime(v, t);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
     o.connect(g); g.connect(this.master);
     o.start(t); o.stop(t + dur + 0.05);
   },
   noise(dur, vol, freq, q, slideTo) {
-    if (!this.ctx || !this.enabled) return;
+    if (!this.ctx || !this.enabled || this.paused) return;   // P34.2: 暂停冻结全部游戏音效
+    const v = ((vol || 0.3) * this.sfxVol());   // P34.2: 音效通道音量缩放(0 → 不建任何节点)
+    if (v <= 0.0001) return;
     const t = this.ctx.currentTime;
     const len = Math.max(1, Math.floor(this.ctx.sampleRate * dur));
     const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
@@ -539,7 +562,7 @@ const AudioSys = {
     f.Q.value = q || 1;
     if (slideTo) f.frequency.exponentialRampToValueAtTime(Math.max(40, slideTo), t + dur);
     const g = this.ctx.createGain();
-    g.gain.setValueAtTime(vol || 0.3, t);
+    g.gain.setValueAtTime(v, t);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
     src.connect(f); f.connect(g); g.connect(this.master);
     src.start(t);
@@ -584,7 +607,35 @@ const AudioSys = {
     const t = this.ctx.currentTime;
     this.engineOsc.frequency.setTargetAtTime(55 + ratio * 90, t, 0.08);
     this.engineFilter.frequency.setTargetAtTime(300 + ratio * 600, t, 0.08);
-    this.engineGain.gain.setTargetAtTime(0.018 + ratio * 0.035, t, 0.1);
+    // P34.2: 非飞行(菜单/暂停/结算/标题)ratio=0 → 目标增益 0(基线恒有 0.018 底噪);
+    //        飞行时增益有上限不过载; setTargetAtTime 平滑无跳变; 乘引擎通道音量。
+    const base = ratio > 0 ? ENGINE_GAIN_MIN + ratio * ENGINE_GAIN_RANGE : 0;
+    const target = Math.min(ENGINE_GAIN_MAX, base) * this.engineVol();
+    this.engineGain.gain.setTargetAtTime(target, t, ENGINE_GAIN_TAU);
+  },
+  consumeHitQueue() {   // P34.2: 每帧消费 HitFeedback.queue 聚合事件合同(读后清空; hit 0.06s 限频; kill 即时)
+    if (typeof HitFeedback === 'undefined' || !HitFeedback.queue) return;
+    const q = HitFeedback.queue;
+    if (!q.length) return;
+    const evts = q.splice(0, q.length);
+    for (const ev of evts) {
+      if (ev.type === 'hit') {
+        if (gameTime - this._lastHitSfxT < HIT_SFX_MIN_INTERVAL) continue;
+        this._lastHitSfxT = gameTime;
+        this.tone(HIT_SFX_FREQ + Math.min(ev.count || 1, HIT_AGG_MAX_COUNT) * 90, HIT_SFX_DUR, 'square', 0.05, -250);
+      } else if (ev.type === 'kill') {
+        this.tone(KILL_SFX_FREQ, KILL_SFX_DUR, 'sawtooth', 0.09, -120);   // 击毁: 低沉下扫(与命中 square 高频区分), 即时不限频
+        this.noise(0.12, 0.06, 520, 0.8, 180);
+      }
+    }
+  },
+  setPaused(on) {   // P34.2: 暂停冻结(状态驱动, 幂等): SFX 门控 + BGM 静音并停止调度; 其余状态解除
+    if (on === this.paused) return;
+    this.paused = on;
+    if (typeof MusicSys !== 'undefined' && MusicSys) {
+      MusicSys.paused = on;
+      if (on && MusicSys.stop) MusicSys.stop();
+    }
   },
   startMusic() {
     if (!this.ctx || this.musicTimer) return;
@@ -716,6 +767,7 @@ var MusicSys = (function () {
     master: null,       // 总 GainNode
     timers: [],         // 调度器句柄集合(stop() 全部 clearInterval)
     muted: false,
+    paused: false,      // P34.2: 暂停时静音并冻结调度(AudioSys.setPaused 镜像)
 
     _noiseBuf: null,    // 共享白噪声缓冲(固定种子填充,可复现)
     _send: null,        // 当前曲目延迟发送节点
@@ -797,7 +849,7 @@ var MusicSys = (function () {
     update: function () {
       if (!this.ctx || !this.master) return;
       this._syncMuteFromGame();
-      var target = this.muted ? 0 : this.volume;
+      var target = (this.muted || this.paused) ? 0 : this.volume;   // P34.2: 暂停静音
       var cur = this.master.gain.value;
       if (Math.abs(cur - target) > 0.0005) {
         this.master.gain.setTargetAtTime(target, this.ctx.currentTime, 0.1);
@@ -818,6 +870,7 @@ var MusicSys = (function () {
     /* ---------- 内部:lookahead 调度核心 ---------- */
     _tickLoop: function (key) {
       if (!this.ctx || !this.master) return;
+      if (this.paused) return;   // P34.2: 暂停冻结 BGM 调度(不排新步进)
       if (this.playing !== key) return;          // 已切换曲目,旧 tick 直接退出
       this._syncMuteFromGame();
       var track = TRACKS[key];
@@ -1036,7 +1089,8 @@ const DIFFICULTY_DEFS = {
 function defaultSave() {
   return { version: 1, unlockedMissions: 1, chapterCleared: 0, selectedPlane: 'gale',
            difficulty: 'normal', bestScore: {}, bestRank: {}, achievements: [], bestKills: 0,
-           totalKills: 0, totalScore: 0, missionsCleared: 0 };
+           totalKills: 0, totalScore: 0, missionsCleared: 0,
+           sfxVolume: SFX_VOLUME_DEFAULT, engineVolume: ENGINE_VOLUME_DEFAULT };
 }
 
 let save = null;
@@ -1057,6 +1111,8 @@ function loadSave() {
     if (!Array.isArray(save.achievements)) save.achievements = [];
     if (!PLANE_DEFS[save.selectedPlane]) save.selectedPlane = 'gale';
     if (!DIFFICULTY_DEFS[save.difficulty]) save.difficulty = 'normal';
+    if (typeof save.sfxVolume !== 'number') save.sfxVolume = SFX_VOLUME_DEFAULT;   // P34.2: 旧存档无音量字段用默认
+    if (typeof save.engineVolume !== 'number') save.engineVolume = ENGINE_VOLUME_DEFAULT;
   } catch (err) {
     save = fallback;
   }
@@ -5366,6 +5422,28 @@ function settingsRowAt(x, y) {
   return SETTINGS_ACTIONS[idx];
 }
 
+// ---------- P34.2 音量设置(settings 屏: 音效/引擎两路, 0~1 步进 0.1, 存 save) ----------
+function volumeRowsLayout() {
+  const L = settingsLayout();
+  const volBottom = Math.min(H * 0.86, H * 0.88 - 54);
+  const rowH = Math.max(18, Math.min(30, (volBottom - 8 - (L.startY + SETTINGS_ACTIONS.length * L.rowH)) / 2));
+  const y0 = L.startY + SETTINGS_ACTIONS.length * L.rowH + 8;
+  return { x: L.rowX, w: L.rowW, rowH, y0, rows: [
+    { y: y0, key: 'sfxVolume', label: '音效音量' },
+    { y: y0 + rowH + 8, key: 'engineVolume', label: '引擎音量' }
+  ] };
+}
+function volumeRowAt(x, y) {
+  const VL = volumeRowsLayout();
+  for (const r of VL.rows) {
+    if (y < r.y || y > r.y + VL.rowH || x < VL.x || x > VL.x + VL.w) continue;
+    const bw = 64, minusX = VL.x + VL.w * 0.52, plusX = VL.x + VL.w * 0.78;
+    if (x >= minusX && x <= minusX + bw) return { key: r.key, dir: -1 };
+    if (x >= plusX && x <= plusX + bw) return { key: r.key, dir: 1 };
+    return null;
+  }
+  return null;
+}
 function startBindCapture(action) {
   captureBind = action;
   AudioSys.click();
@@ -5389,6 +5467,14 @@ function handleSettingsPress(x, y) {
   const row = settingsRowAt(x, y);
   if (row) {
     startBindCapture(row.action);
+    return true;
+  }
+  const vr = volumeRowAt(x, y);
+  if (vr) {
+    const cur = typeof save[vr.key] === 'number' ? save[vr.key] : 1;
+    save[vr.key] = Math.round(clamp(cur + vr.dir * 0.1, 0, 1) * 10) / 10;
+    saveNow();
+    AudioSys.click();
     return true;
   }
   return false;
@@ -5421,6 +5507,31 @@ function drawSettings() {
     ctx.textAlign = 'right';
     ctx.fillStyle = active ? '#9be3ff' : '#7fd4ff';
     ctx.fillText(active ? '请按键...' : prettyKey(bindFor(row.action)), L.rowX + L.rowW - 18, y + L.rowH * 0.62);
+  }
+  const VL = volumeRowsLayout();
+  for (const r of VL.rows) {
+    ctx.fillStyle = 'rgba(14,32,52,0.85)';
+    ctx.strokeStyle = 'rgba(140,180,210,0.5)';
+    ctx.lineWidth = 1.2;
+    roundRect(VL.x, r.y, VL.w, VL.rowH - 6, 7);
+    ctx.fill(); ctx.stroke();
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#dfe9f2';
+    ctx.font = '600 ' + Math.round(Math.min(15, W * 0.02)) + 'px "Microsoft YaHei", sans-serif';
+    ctx.fillText(r.label, VL.x + 18, r.y + VL.rowH * 0.62);
+    ctx.fillStyle = '#ffd166';
+    ctx.fillText(Math.round(((typeof save[r.key] === 'number' ? save[r.key] : 1)) * 100) + '%', VL.x + VL.w * 0.5 - 30, r.y + VL.rowH * 0.62);
+    const btns = [[VL.x + VL.w * 0.52, '−'], [VL.x + VL.w * 0.78, '+']];
+    for (const [bx, bl] of btns) {
+      ctx.fillStyle = 'rgba(35,70,105,0.95)';
+      ctx.strokeStyle = '#ffd166';
+      roundRect(bx, r.y + 4, 64, Math.max(14, VL.rowH - 12), 6);
+      ctx.fill(); ctx.stroke();
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#9be3ff';
+      ctx.font = '700 ' + Math.round(Math.min(16, W * 0.021)) + 'px "Microsoft YaHei", sans-serif';
+      ctx.fillText(bl, bx + 32, r.y + VL.rowH * 0.62);
+    }
   }
   const hovered = hoverButton();
   for (const b of menuButtons) drawMenuButton(b, b === hovered);
@@ -7923,6 +8034,7 @@ function update(dt) {
   gameTime += dt;
   const flying = GAME.state === 'playing' && player.alive && mission && !mission.complete && !mission.failed;
   AudioSys.updateEngine(flying ? clamp(player.speed / (CFG.maxSpeed + CFG.abSpeed), 0, 1) : 0);
+  AudioSys.setPaused(GAME.state === 'paused');   // P34.2: 暂停 → 全部游戏音频静音/冻结; 其他状态解除(幂等)
   if (GAME.state === 'playing' && upgradeChoice) return;
   updateTransition(dt);
   updateWrecks(dt);
@@ -7961,6 +8073,7 @@ function update(dt) {
       updateBullets(dt);
       updateMissiles(dt);
       HitFeedback.update(dt);   // P32: 离散反馈聚合推进(游戏 dt, 禁 setTimeout)
+      AudioSys.consumeHitQueue();   // P34.2: 每帧消费命中/击毁聚合事件(读后清空)
       updatePickups(dt);
       updateParticles(dt);
       updateCamera(dt);
