@@ -135,10 +135,29 @@ const input = {
 };
 
 // 触屏滑动手势状态(任务书 20):dir 只认水平 'left'|'right'(任务书 21)
-const touchSwipe = { dir: null, active: false, startX: 0, startY: 0, lastDir: null, lastT: -99 };
+const touchSwipe = { dir: null, active: false, startX: 0, startY: 0, lastDir: null, lastT: -99, strength: 0 };
 const SWIPE_THRESH = 28;      // px,水平滑动激活阈值,可调(任务书 20)
 const SWIPE_DOUBLE_GAP = 0.6; // 秒,双滑判定间隔,可调(任务书 20)
 const KEY_TAP_DOUBLE_GAP = 0.6; // 秒,PC 双击 A/D 滚筒判定间隔,可调(任务书 21)
+// ---------- P34.1 触屏滑动转向连续强度映射(候选A, 真机签收门) ----------
+// 死区保留 SWIPE_THRESH(|dx|>28px 激活, 任务书 21 契约); 强度锚点: 28px→0.35、W_eff*0.30→1.0、中间线性、钳制[0,1]
+const STEER_STRENGTH_MIN_PX = 28;       // px(CSS 逻辑像素): 低于此距离 strength=0
+const STEER_STRENGTH_FULL_RATIO = 0.30; // 有效可玩宽度占比 → strength=1.0
+const STEER_RATE_MIN = 0.8;             // strength=0 端点转向倍率
+const STEER_RATE_MAX = 1.8;             // strength=1 端点转向倍率
+// 有效可玩宽度 = 视口宽 − 左右安全区 − 右侧固定控制带(复用 P33 safeInsets()/hudRects()); CSS 逻辑像素口径
+function steerEffectiveWidth() {
+  const hr = hudRects();
+  const controlBand = W - hr.throttle.x + HUD_CONTROL_GAP; // 油门条左缘到右视口缘 + 控制带间距
+  return Math.max(1, W - hr.ml - hr.mr - controlBand);
+}
+// 滑动距离 → 归一化强度: 28px→0.35、W_eff*0.30→1.0、中间线性、钳制[0,1](纯函数, 可测)
+function steerStrengthFromPx(px) {
+  if (px < STEER_STRENGTH_MIN_PX) return 0;
+  const full = steerEffectiveWidth() * STEER_STRENGTH_FULL_RATIO;
+  const s = 0.35 + (px - STEER_STRENGTH_MIN_PX) / Math.max(1, full - STEER_STRENGTH_MIN_PX) * 0.65;
+  return clamp(s, 0, 1);
+}
 
 const DEFAULT_BINDS = {
   throttleUp: 'KeyW',
@@ -363,10 +382,12 @@ canvas.addEventListener('touchmove', (e) => {
       if (Math.abs(dx) > SWIPE_THRESH && Math.abs(dx) > Math.abs(dy)) {
         touchSwipe.dir = dx < 0 ? 'left' : 'right';
         touchSwipe.active = true;
+        touchSwipe.strength = steerStrengthFromPx(Math.abs(dx)); // P34.1: 连续强度(实时跟随滑动距离)
       } else if (touchSwipe.active) {
         // 位移回到阈值内 → 取消激活
         touchSwipe.active = false;
         touchSwipe.dir = null;
+        touchSwipe.strength = 0;
       }
     }
   }
@@ -390,6 +411,7 @@ function completeSwipe() {
   }
   touchSwipe.active = false;
   touchSwipe.dir = null;
+  touchSwipe.strength = 0;
 }
 
 function endTouch(e) {
@@ -2989,9 +3011,10 @@ function updatePlayer(dt) {
   // 触屏手势(任务书 20):手势激活时优先级高于键盘/鼠标
   const swipeActive = input.isTouch && touchSwipe.active && touchSwipe.dir;
   if (swipeActive) {
-    // 左/右滑按住 → 转向(同键盘分支逻辑)
-    if (touchSwipe.dir === 'left') steerPlane(player, player.heading - Math.PI / 2, dt, 1.5);
-    else if (touchSwipe.dir === 'right') steerPlane(player, player.heading + Math.PI / 2, dt, 1.5);
+    // 左/右滑按住 → 转向; P34.1 连续强度: rateMult = lerp(STEER_RATE_MIN, STEER_RATE_MAX, strength), 触屏倍率 1.5 与高速衰减 32% 保持现状
+    const rateMult = lerp(STEER_RATE_MIN, STEER_RATE_MAX, touchSwipe.strength);
+    if (touchSwipe.dir === 'left') steerPlane(player, player.heading - Math.PI / 2, dt, 1.5 * rateMult);
+    else if (touchSwipe.dir === 'right') steerPlane(player, player.heading + Math.PI / 2, dt, 1.5 * rateMult);
     else player.bank = lerp(player.bank, 0, 1 - Math.exp(-dt * 8));
   } else if (turnL || turnR) {
     const dir = turnL ? -1 : 1;
