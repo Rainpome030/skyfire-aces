@@ -66,6 +66,27 @@ function angDiff(a, b) {
 }
 function dist2(ax, ay, bx, by) { const dx = bx - ax, dy = by - ay; return dx * dx + dy * dy; }
 function dist(ax, ay, bx, by) { return Math.sqrt(dist2(ax, ay, bx, by)); }
+// ---------- P31 近距命中扫掠(几何纯函数, 无对象分配) ----------
+// 线段(x0,y0)->(x1,y1)与圆(cx,cy,r): 返回最近命中比例 t∈[0,1], 无交返回 null。
+// 起点在圆内(含边界)返回 0; 零长度线段退化为点测试; 擦边(disc=0)仍返回有效 t。
+function segmentCircleHitT(x0, y0, x1, y1, cx, cy, r) {
+  const dx = x1 - x0, dy = y1 - y0;
+  const fx = x0 - cx, fy = y0 - cy;
+  const a = dx * dx + dy * dy;
+  const b = 2 * (fx * dx + fy * dy);
+  const c = fx * fx + fy * fy - r * r;
+  if (a === 0) return c <= 0 ? 0 : null;   // 零长度线段: 点测试
+  if (c <= 0) return 0;                    // 起点在圆内/圆上
+  const disc = b * b - 4 * a * c;
+  if (disc < 0) return null;               // 无交
+  const sq = Math.sqrt(disc);
+  let t = (-b - sq) / (2 * a);             // 最近交点
+  if (t < 0) t = (-b + sq) / (2 * a);      // 起点圆外且线段整体位于圆前 → 远交点(必 <0 → null)
+  return (t >= 0 && t <= 1) ? t : null;
+}
+function segmentHitsCircle(x0, y0, x1, y1, cx, cy, r) {
+  return segmentCircleHitT(x0, y0, x1, y1, cx, cy, r) !== null;
+}
 function angleTo(ax, ay, bx, by) { return Math.atan2(by - ay, bx - ax); }
 function fmt(n) { return Math.round(n).toLocaleString('en-US'); }
 function seeded(seed) {
@@ -3054,43 +3075,53 @@ function updateBullets(dt) {
   for (let i = bullets.length - 1; i >= 0; i--) {
     const b = bullets[i];
     if (!b) { bullets.splice(i, 1); continue; }
+    const sx = b.x, sy = b.y;   // 本帧起点(扫掠用, 标量无分配)
     b.x += b.vx * dt;
     b.y += b.vy * dt;
     b.life -= dt;
     b.hitCount = b.hitCount || 0;
     let dead = b.life <= 0;
-    if (!dead) {
-      if (b.fromPlayer) {
-        for (const e of enemies) {
-          if (e.dead) continue;
-          const bdx = b.x - e.x, bdy = b.y - e.y;
-          if (bdx * bdx + bdy * bdy > 14400) continue; // 粗剪枝:>120px 跳过精确检测
-          if (dist2(b.x, b.y, e.x, e.y) < (e.r + 8) * (e.r + 8)) {
-            damagePlane(e, b.dmg);
-            if (b.blast) {
-              for (const other of enemies) {
-                if (other.dead || other === e) continue;
-                if (dist(b.x, b.y, other.x, other.y) < b.blast + other.r) damagePlane(other, b.dmg * 0.55);
-              }
-            }
-            burstSpark(b.x, b.y, 3, 130, 0.25);
-            if (b.source !== 'wingman') GAME.shotsHit++;
-            b.hitCount++;
-            if (!b.pierce || b.hitCount > b.pierce) dead = true;
-            break;
+    if (b.fromPlayer) {
+      // P31: 近距命中扫掠——整帧线段 vs 敌机命中圆, 命中轨迹上最近目标(t 最小);
+      // 碰撞判定先于销毁(生命耗尽帧仍结算本帧扫掠); 爆炸/特效位于交点而非终点。
+      let bestT = 2, bestE = null;
+      for (let j = 0; j < enemies.length; j++) {
+        const e = enemies[j];
+        if (!e || e.dead || e === b.lastHit) continue;   // 穿透弹不重复结算刚穿过的目标
+        const hr = e.r + 8;
+        const bx0 = sx < b.x ? sx : b.x, bx1 = sx < b.x ? b.x : sx;
+        if (e.x < bx0 - hr || e.x > bx1 + hr) continue;   // 线段包围盒粗剪枝(两端点各扩 hr)
+        const by0 = sy < b.y ? sy : b.y, by1 = sy < b.y ? b.y : sy;
+        if (e.y < by0 - hr || e.y > by1 + hr) continue;
+        const t = segmentCircleHitT(sx, sy, b.x, b.y, e.x, e.y, hr);
+        if (t !== null && t < bestT) { bestT = t; bestE = e; }
+      }
+      if (bestE) {
+        const hx = sx + (b.x - sx) * bestT, hy = sy + (b.y - sy) * bestT;
+        damagePlane(bestE, b.dmg);
+        if (b.blast) {
+          for (const other of enemies) {
+            if (other.dead || other === bestE) continue;
+            if (dist(hx, hy, other.x, other.y) < b.blast + other.r) damagePlane(other, b.dmg * 0.55);
           }
         }
-      } else {
-        for (const t of [player, ...allies]) {
-          if (t.dead || !t.alive) continue;
-          if (dist2(b.x, b.y, t.x, t.y) < (t.r + 8) * (t.r + 8)) {
-            if (t === player) hurtPlayer(b.dmg);
-            else if (t.kind === 'wingman') damageWingman(t, b.dmg);
-            else damagePlane(t, b.dmg);
-            burstSpark(b.x, b.y, 3, 130, 0.25);
-            dead = true;
-            break;
-          }
+        burstSpark(hx, hy, 3, 130, 0.25);   // 命中特效位于扫掠交点
+        if (b.source !== 'wingman') GAME.shotsHit++;
+        b.hitCount++;
+        b.lastHit = bestE;
+        if (b.pierce && b.hitCount <= b.pierce) { b.x = hx; b.y = hy; }   // 穿透弹自交点继续(每帧仍只结算最近 1 目标)
+        else dead = true;
+      }
+    } else if (!dead) {
+      for (const t of [player, ...allies]) {
+        if (t.dead || !t.alive) continue;
+        if (dist2(b.x, b.y, t.x, t.y) < (t.r + 8) * (t.r + 8)) {
+          if (t === player) hurtPlayer(b.dmg);
+          else if (t.kind === 'wingman') damageWingman(t, b.dmg);
+          else damagePlane(t, b.dmg);
+          burstSpark(b.x, b.y, 3, 130, 0.25);
+          dead = true;
+          break;
         }
       }
     }
@@ -3331,6 +3362,78 @@ function separateEnemies() {
       }
     }
   }
+}
+
+// ---------- P31 玩家-敌机柔和分离 + 接触伤害(发布默认零值) ----------
+const SEP_MARGIN = 10;          // 分离触发间距(可调): 目标机心距 = player.r + e.r + SEP_MARGIN
+const SEP_MAX_PUSH = 6;         // 玩家每 tick 累计推移上限(可调, 防瞬移; 不得按敌机分别推)
+const SEP_ITER_MAX = 3;         // 每 tick 最多处理的敌机数(可调, 优先穿透最深者)
+let CONTACT_DMG = 0;            // 接触伤害(可调; 发布默认 0 = 只分离不扣血不震动)
+let CONTACT_COOLDOWN = 0.5;     // 玩家级全局接触冷却(可调, 非零伤害路径生效)
+const CONTACT_MAX_RATIO = 0.03; // 单次接触伤害上限 = 玩家最大生命 3%(可调, 2-3%)
+
+function separatePlayerFromEnemies() {
+  if (GAME.state !== 'playing' || !player.alive || player.dead) return;
+  if (!mission || mission.complete || mission.failed) return;
+  let pushed = 0;
+  for (let iter = 0; iter < SEP_ITER_MAX; iter++) {
+    let worst = null, worstD2 = Infinity;
+    for (let i = 0; i < enemies.length; i++) {
+      const e = enemies[i];
+      if (!e || e.dead || e.hp <= 0) continue;
+      const dx = e.x - player.x, dy = e.y - player.y;
+      const d2 = dx * dx + dy * dy;
+      const min = player.r + e.r + SEP_MARGIN;
+      if (d2 < min * min && d2 < worstD2) { worst = e; worstD2 = d2; }   // 优先穿透最深者
+    }
+    if (!worst) break;
+    const min = player.r + worst.r + SEP_MARGIN;
+    let d = Math.sqrt(worstD2);
+    let nx, ny;
+    if (d < 1e-6) {
+      // 中心完全重合: 确定性备用法向量(玩家朝向, 禁 NaN/随机抖动)
+      nx = Math.cos(player.heading); ny = Math.sin(player.heading);
+    } else {
+      nx = (worst.x - player.x) / d; ny = (worst.y - player.y) / d;
+    }
+    const need = min - d;
+    const epush = need / 2;                                             // 敌机侧推力(每敌各半)
+    const ppush = Math.min(need - epush, SEP_MAX_PUSH - pushed);        // 玩家侧受每 tick 累计上限
+    if (ppush > 0) {
+      player.x -= nx * ppush; player.y -= ny * ppush;
+      pushed += ppush;
+    }
+    if (epush > 0) {
+      worst.x += nx * epush; worst.y += ny * epush;
+      worst.x = clamp(worst.x, 120, world.W - 120);
+      worst.y = clamp(worst.y, 120, world.H - 120);
+    }
+  }
+  // 分离后重新执行飞行边界约束
+  player.x = clamp(player.x, 120, world.W - 120);
+  player.y = clamp(player.y, 120, world.H - 120);
+}
+
+function updatePlayerContact(dt) {
+  if (GAME.state !== 'playing' || !player.alive || player.dead) return;
+  if (!mission || mission.complete || mission.failed) return;
+  if (!(dt > 0) || !Number.isFinite(dt)) return;
+  if (CONTACT_DMG <= 0) return;                      // 发布默认零值: 只分离, 不扣血不震动(不跑检测)
+  player.contactCd = Math.max(0, (player.contactCd || 0) - dt);
+  let touching = false;
+  for (let i = 0; i < enemies.length; i++) {
+    const e = enemies[i];
+    if (!e || e.dead || e.hp <= 0) continue;
+    const dx = e.x - player.x, dy = e.y - player.y;
+    const hr = player.r + e.r;
+    if (dx * dx + dy * dy < hr * hr) { touching = true; break; }
+  }
+  if (!touching) { player.contactCd = 0; return; }   // 脱离接触 → 冷却归零(下次接触立即可伤)
+  if (player.contactCd > 0) return;                  // 玩家级全局冷却内不重复结算
+  if (player.invuln > 0) return;                     // 无敌期内不消耗冷却、无受击反馈
+  player.contactCd = CONTACT_COOLDOWN;
+  const dmg = Math.min(CONTACT_DMG, Math.max(1, Math.round(player.maxHp * CONTACT_MAX_RATIO)));
+  hurtPlayer(dmg);   // 走既有 hurtPlayer 全链(难度倍率/护盾/受击反馈), 不新建扣血路径
 }
 
 function collectWingmanSupport() {
@@ -3839,6 +3942,7 @@ function startMission(index, mode) {
   player.rollActive = false; player.rollT = 0; player.rollDir = 0; player.rollCd = 0;
   player.lastDirTap = { dir: null, t: -99 };
   player.dashActive = false; player.dashT = 0; player.dashCd = 0; player.dashPressed = false;
+  player.contactCd = 0;   // 接触冷却重置(任务书 31: 重开/新任务)
   player.weapon = defaultWeapon();
   applyPlaneSetup();
   GAME.exp = 0; GAME.level = 1; GAME.combo = 0; GAME.comboTimer = 0;
@@ -3889,6 +3993,7 @@ function startEndless() {
   player.rollActive = false; player.rollT = 0; player.rollDir = 0; player.rollCd = 0;
   player.lastDirTap = { dir: null, t: -99 };
   player.dashActive = false; player.dashT = 0; player.dashCd = 0; player.dashPressed = false;
+  player.contactCd = 0;   // 接触冷却重置(任务书 31: 重开/新任务)
   player.weapon = defaultWeapon();
   applyPlaneSetup();
   GAME.exp = 0; GAME.level = 1; GAME.combo = 0; GAME.comboTimer = 0;
@@ -4975,6 +5080,7 @@ function finishMission(success) {
 // ---------- state ----------
 function setState(s) {
   GAME.state = s;
+  if (s === 'title') player.contactCd = 0;   // 返回标题重置接触冷却(任务书 31)
   menuButtons = [];
   if (s === 'title' || s === 'briefing' || s === 'complete' || s === 'gameover' || s === 'paused' || s === 'settings' || s === 'hangar' || s === 'achievements' || s === 'select') {
     buildMenuButtons(s);
@@ -7627,6 +7733,8 @@ function update(dt) {
         }
       }
       separateEnemies();
+      separatePlayerFromEnemies();
+      updatePlayerContact(dt);
       updateWingmanCollisions(dt);
       updateBullets(dt);
       updateMissiles(dt);
