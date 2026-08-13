@@ -444,6 +444,17 @@ window.addEventListener('keydown', (e) => {
     completeBindCapture(code);
     return;
   }
+  if (controlSchemeAsk && GAME.state === 'playing') {
+    // P36: 询问期间键盘导航(左右箭头移动高亮, 回车/空格确认; 其余键不响应, 防误触暂停/滚筒)
+    e.preventDefault();
+    if (code === 'ArrowLeft' || code === 'ArrowRight') {
+      controlSchemeAskSel = code === 'ArrowLeft' ? 0 : 1;
+      AudioSys.click();
+    } else if (code === 'Enter' || code === 'NumpadEnter' || code === 'Space') {
+      chooseControlScheme(controlSchemeAskSel === 0 ? 'keyboard+mouse' : 'keyboard-only');
+    }
+    return;
+  }
   input.keys[code] = true;
   input.keys[e.key.toLowerCase()] = true;
   if (code === 'Space') e.preventDefault();
@@ -1090,12 +1101,17 @@ function defaultSave() {
   return { version: 1, unlockedMissions: 1, chapterCleared: 0, selectedPlane: 'gale',
            difficulty: 'normal', bestScore: {}, bestRank: {}, achievements: [], bestKills: 0,
            totalKills: 0, totalScore: 0, missionsCleared: 0,
-           sfxVolume: SFX_VOLUME_DEFAULT, engineVolume: ENGINE_VOLUME_DEFAULT };
+           sfxVolume: SFX_VOLUME_DEFAULT, engineVolume: ENGINE_VOLUME_DEFAULT,
+           controlScheme: 'keyboard+mouse' };
 }
 
+let controlSchemeChosen = false;   // P36: 是否曾明确选择操作方式(原始存档含该字段 或 本次会话已选择)
+let controlSchemeAsk = false;      // P36: 首次进入 playing 的操作方式二选一询问弹窗
+let controlSchemeAskSel = 0;       // P36: 询问弹窗键盘导航高亮: 0=键鼠 1=纯键盘
 let save = null;
 
 function loadSave() {
+  controlSchemeChosen = false;   // P36: 每次加载重置(是否询问以原始存档是否含 controlScheme 字段为准)
   const fallback = defaultSave();
   try {
     const raw = localStorage.getItem(SAVE_KEY);
@@ -1106,6 +1122,8 @@ function loadSave() {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid save data');
     save = Object.assign(fallback, parsed);
+    if (typeof save.controlScheme !== 'string' || (save.controlScheme !== 'keyboard+mouse' && save.controlScheme !== 'keyboard-only')) save.controlScheme = 'keyboard+mouse';   // P36: 旧档无字段默认键鼠, 不报错
+    controlSchemeChosen = !!(typeof parsed.controlScheme === 'string' && (parsed.controlScheme === 'keyboard+mouse' || parsed.controlScheme === 'keyboard-only'));   // P36: 原始存档已含该字段 = 已选择过, 不再询问
     if (!save.bestScore || typeof save.bestScore !== 'object' || Array.isArray(save.bestScore)) save.bestScore = {};
     if (!save.bestRank || typeof save.bestRank !== 'object' || Array.isArray(save.bestRank)) save.bestRank = {};
     if (!Array.isArray(save.achievements)) save.achievements = [];
@@ -1184,6 +1202,7 @@ const MOUSE_STEER_FULL = 0.35; // 屏幕宽比例:该水平距离处达满速
 const MOUSE_STEER_RATE = 1.5; // 满速转向倍率(与键盘一致)
 const MOUSE_STEER_MIN = 0.2; // 死区边缘最低倍率
 const MOUSE_STEER_TIMEOUT = 2; // 秒:鼠标最后移动距今超时后转向失效
+const MOUSE_STEER_SPEED = 0.7;  // P36: 鼠标转向角速度系数(解决"有点快"), 可调; 距离控速语义不变
 
 const GAME = {
   state: 'title',
@@ -3075,11 +3094,12 @@ function updatePlayer(dt) {
   } else if (turnL || turnR) {
     const dir = turnL ? -1 : 1;
     steerPlane(player, player.heading + dir * Math.PI / 2, dt, 1.5);
-  } else if (mouseSteerActive(now)) {
+  } else if (save.controlScheme !== 'keyboard-only' && mouseSteerActive(now)) {
     // 追尾相对转向(任务书 22):鼠标偏右→持续右转,偏左→持续左转,越远越快,回中停
+    // P36: 纯键盘模式下鼠标不参与自机转向(仅 UI 点击); 键鼠模式角速度乘 MOUSE_STEER_SPEED 系数(已选择操作方式后生效)
     const mx = input.mouse.x - W / 2;
     if (Math.abs(mx) > MOUSE_STEER_DEADZONE) {
-      const rate = MOUSE_STEER_RATE * clamp(Math.abs(mx) / (W * MOUSE_STEER_FULL), MOUSE_STEER_MIN, 1);
+      const rate = (MOUSE_STEER_RATE * clamp(Math.abs(mx) / (W * MOUSE_STEER_FULL), MOUSE_STEER_MIN, 1)) * (controlSchemeChosen ? MOUSE_STEER_SPEED : 1);
       steerPlane(player, player.heading + Math.sign(mx) * Math.PI / 2, dt, rate);
     }
   } else {
@@ -5291,6 +5311,8 @@ function finishMission(success) {
 // ---------- state ----------
 function setState(s) {
   GAME.state = s;
+  // P36-R1: 首次询问不再于 setState 触发——任何直接置 state='playing' 的路径绝不出现询问浮层;
+  // 询问仅由真实 UI 出击/开始入口按钮(pointerdown/keydown 处理器)经 maybeAskControlScheme() 触发
   if (s === 'title') player.contactCd = 0;   // 返回标题重置接触冷却(任务书 31)
   menuButtons = [];
   if (s === 'title' || s === 'briefing' || s === 'complete' || s === 'gameover' || s === 'paused' || s === 'settings' || s === 'hangar' || s === 'achievements' || s === 'select') {
@@ -5350,14 +5372,14 @@ function buildMenuButtons(state) {
   if (state === 'title') {
     const titleItems = [
       { label: '战役模式', primary: true, action: () => { AudioSys.click(); GAME.mode = 'campaign'; setState('select'); } },
-      { label: '自由出击', primary: false, action: () => { AudioSys.click(); GAME.mode = 'endless'; startTransition(() => startEndless()); } },
+      { label: '自由出击', primary: false, action: () => { AudioSys.click(); maybeAskControlScheme(); GAME.mode = 'endless'; startTransition(() => startEndless()); } },
       { label: '机库', primary: false, action: () => { AudioSys.click(); setState('hangar'); } },
       { label: '按键设置', primary: false, action: () => { AudioSys.click(); settingsReturn = 'title'; setState('settings'); } }
     ];
     menuButtons = stack(titleItems, H * 0.60);
   } else if (state === 'briefing') {
     menuButtons = stack([
-      { label: '出击', action: () => { AudioSys.click(); startTransition(() => startMission(GAME.missionIndex, GAME.mode)); }, primary: true },
+      { label: '出击', action: () => { AudioSys.click(); maybeAskControlScheme(); startTransition(() => startMission(GAME.missionIndex, GAME.mode)); }, primary: true },
       { label: '返回标题', action: () => { AudioSys.click(); startTransition(() => { GAME.mode = 'campaign'; setState('title'); }); } },
       { label: '选择任务', action: () => { AudioSys.click(); setState('select'); } }
     ], H * 0.72);
@@ -5365,7 +5387,7 @@ function buildMenuButtons(state) {
     const isLast = GAME.missionIndex >= Math.min(save.unlockedMissions, MISSION_DEFS.length) - 1;
     if (isLast) {
       menuButtons = stack([
-        { label: '自由出击', action: () => { AudioSys.click(); startTransition(() => startEndless()); }, primary: true },
+        { label: '自由出击', action: () => { AudioSys.click(); maybeAskControlScheme(); startTransition(() => startEndless()); }, primary: true },
         { label: '返回标题', action: () => { AudioSys.click(); startTransition(() => { setState('title'); }); } }
       ], H * 0.78);
     } else {
@@ -5377,13 +5399,13 @@ function buildMenuButtons(state) {
   } else if (state === 'gameover') {
     const retryLabel = GAME.mode === 'endless' ? '再战一轮' : '重新出击';
     menuButtons = stack([
-      { label: retryLabel, action: () => { AudioSys.click(); if (GAME.mode === 'endless') startTransition(() => startEndless()); else startTransition(() => startMission(GAME.missionIndex, 'campaign')); }, primary: true },
+      { label: retryLabel, action: () => { AudioSys.click(); maybeAskControlScheme(); if (GAME.mode === 'endless') startTransition(() => startEndless()); else startTransition(() => startMission(GAME.missionIndex, 'campaign')); }, primary: true },
       { label: '返回标题', action: () => { AudioSys.click(); startTransition(() => { setState('title'); }); } }
     ], H * 0.78);
   } else if (state === 'paused') {
     menuButtons = stack([
       { label: '继续战斗', action: () => { AudioSys.click(); requestResume(); }, primary: true },
-      { label: '重新开始任务', action: () => { AudioSys.click(); startTransition(() => { if (GAME.mode === 'endless') startEndless(); else startMission(GAME.missionIndex, 'campaign'); }); } },
+      { label: '重新开始任务', action: () => { AudioSys.click(); maybeAskControlScheme(); startTransition(() => { if (GAME.mode === 'endless') startEndless(); else startMission(GAME.missionIndex, 'campaign'); }); } },
       { label: '按键设置', action: () => { AudioSys.click(); settingsReturn = 'paused'; setState('settings'); } },
       { label: '返回标题', action: () => { AudioSys.click(); GAME.pendingTimer = 0; GAME.pendingState = null; startTransition(() => { setState('title'); }); } }
     ], H * 0.52);
@@ -5444,6 +5466,20 @@ function volumeRowAt(x, y) {
   }
   return null;
 }
+// ---------- P36 操作方式设置行(键鼠/纯键盘 随时切换, 即改即存) ----------
+function controlSchemeRowLayout() {
+  const VL = volumeRowsLayout();
+  const L = settingsLayout();
+  let y = VL.y0 + VL.rows.length * (VL.rowH + 8) + 4;
+  const h = Math.max(14, Math.min(24, VL.rowH + 4));
+  y = Math.min(y, H * 0.88 - 6 - h);
+  return { x: L.rowX, w: L.rowW, y, h };
+}
+function controlSchemeRowAt(x, y) {
+  const R = controlSchemeRowLayout();
+  return (x >= R.x && x <= R.x + R.w && y >= R.y && y <= R.y + R.h) ? true : false;
+}
+
 function startBindCapture(action) {
   captureBind = action;
   AudioSys.click();
@@ -5473,6 +5509,14 @@ function handleSettingsPress(x, y) {
   if (vr) {
     const cur = typeof save[vr.key] === 'number' ? save[vr.key] : 1;
     save[vr.key] = Math.round(clamp(cur + vr.dir * 0.1, 0, 1) * 10) / 10;
+    saveNow();
+    AudioSys.click();
+    return true;
+  }
+  if (controlSchemeRowAt(x, y)) {
+    // P36: 「操作方式」行随时切换, 即改即存; 设置中切换同样视为已选择, 不再弹首次询问
+    save.controlScheme = save.controlScheme === 'keyboard-only' ? 'keyboard+mouse' : 'keyboard-only';
+    controlSchemeChosen = true;
     saveNow();
     AudioSys.click();
     return true;
@@ -5533,6 +5577,19 @@ function drawSettings() {
       ctx.fillText(bl, bx + 32, r.y + VL.rowH * 0.62);
     }
   }
+  const CR = controlSchemeRowLayout();
+  ctx.fillStyle = 'rgba(14,32,52,0.85)';
+  ctx.strokeStyle = 'rgba(140,180,210,0.5)';
+  ctx.lineWidth = 1.2;
+  roundRect(CR.x, CR.y, CR.w, CR.h - 4, 7);
+  ctx.fill(); ctx.stroke();
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#dfe9f2';
+  ctx.font = '600 ' + Math.round(Math.min(15, W * 0.02)) + 'px "Microsoft YaHei", sans-serif';
+  ctx.fillText('操作方式', CR.x + 18, CR.y + CR.h * 0.62);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#ffd166';
+  ctx.fillText(save.controlScheme === 'keyboard-only' ? '纯键盘(鼠标仅界面点击)' : '键鼠(鼠标转向)', CR.x + CR.w - 18, CR.y + CR.h * 0.62);
   const hovered = hoverButton();
   for (const b of menuButtons) drawMenuButton(b, b === hovered);
 }
@@ -5551,6 +5608,14 @@ function handleCanvasPress(x, y) {
       }
     }
     if (inRect(x, y, L.skip)) return skipUpgradeChoice();
+    return false;
+  }
+  if (controlSchemeAsk && GAME.state === 'playing') {
+    // P36: 首次操作方式询问(鼠标/触屏点击二选一)
+    const L = controlSchemeAskLayout();
+    for (const b of L.buttons) {
+      if (inRect(x, y, b)) { chooseControlScheme(b.scheme); return true; }
+    }
     return false;
   }
   if (GAME.state === 'playing') return false;
@@ -8009,6 +8074,74 @@ function upgradeChoiceLayout() {
   };
 }
 
+// ---------- P36 控制方案(键鼠/纯键盘)选择 ----------
+// P36-R1: 首次询问触发收紧——只在真实 UI 出击/开始入口按钮(pointerdown/keydown 处理器)调用;
+// startMission/startEndless 本体与 setState('playing') 均不弹询问(修复 hud-pause 58/61、hit-feedback 23/25 回归)
+function maybeAskControlScheme() {
+  if (!controlSchemeChosen && !controlSchemeAsk) {
+    controlSchemeAsk = true;
+    controlSchemeAskSel = 0;
+  }
+}
+function controlSchemeAskLayout() {
+  const panelW = Math.min(660, W - 24);
+  const panelX = (W - panelW) / 2;
+  const panelH = Math.min(300, H * 0.40);
+  const panelY = Math.max(8, Math.min(H * 0.30, (H - panelH) / 2));
+  const gap = 14;
+  const btnW = (panelW - 48 - gap) / 2;
+  const btnH = Math.min(92, Math.max(64, panelH * 0.32));
+  const btnY = panelY + panelH - btnH - 24;
+  return {
+    panel: { x: panelX, y: panelY, w: panelW, h: panelH },
+    buttons: [
+      { x: panelX + 24, y: btnY, w: btnW, h: btnH, scheme: 'keyboard+mouse', label: '键鼠', desc: '鼠标控制转向 + 键盘' },
+      { x: panelX + 24 + btnW + gap, y: btnY, w: btnW, h: btnH, scheme: 'keyboard-only', label: '纯键盘', desc: '键盘控制, 鼠标仅界面点击' }
+    ]
+  };
+}
+function chooseControlScheme(scheme) {
+  save.controlScheme = scheme === 'keyboard-only' ? 'keyboard-only' : 'keyboard+mouse';
+  controlSchemeChosen = true;
+  controlSchemeAsk = false;
+  controlSchemeAskSel = 0;
+  saveNow();
+  AudioSys.click();
+}
+function drawControlSchemeAsk() {
+  if (!controlSchemeAsk) return;
+  const L = controlSchemeAskLayout();
+  ctx.fillStyle = 'rgba(4,10,18,0.72)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(10,24,40,0.96)';
+  ctx.strokeStyle = 'rgba(255,209,102,0.5)';
+  ctx.lineWidth = 2;
+  roundRect(L.panel.x, L.panel.y, L.panel.w, L.panel.h, 12);
+  ctx.fill(); ctx.stroke();
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd166';
+  ctx.font = '900 ' + Math.round(Math.min(30, W * 0.04)) + 'px "Microsoft YaHei", sans-serif';
+  ctx.fillText('选择操作方式', W / 2, L.panel.y + 46);
+  ctx.fillStyle = '#aebecd';
+  ctx.font = '500 ' + Math.round(Math.min(14, W * 0.019)) + 'px "Microsoft YaHei", sans-serif';
+  ctx.fillText('首次出击: 请选择自机控制方式, 之后可随时在「按键设置」中更改', W / 2, L.panel.y + 74);
+  for (let i = 0; i < L.buttons.length; i++) {
+    const b = L.buttons[i];
+    const hovered = inRect(input.mouse.x, input.mouse.y, b) || controlSchemeAskSel === i;
+    ctx.fillStyle = hovered ? 'rgba(30,60,90,0.95)' : 'rgba(16,38,60,0.9)';
+    ctx.strokeStyle = hovered ? '#ffd166' : 'rgba(140,180,210,0.6)';
+    ctx.lineWidth = hovered ? 3 : 1.5;
+    roundRect(b.x, b.y, b.w, b.h, 10);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = hovered ? '#ffd166' : '#dfe9f2';
+    ctx.font = '700 ' + Math.round(Math.min(20, W * 0.026)) + 'px "Microsoft YaHei", sans-serif';
+    ctx.fillText(b.label, b.x + b.w / 2, b.y + 40);
+    ctx.fillStyle = '#aebecd';
+    ctx.font = '500 ' + Math.round(Math.min(13, W * 0.017)) + 'px "Microsoft YaHei", sans-serif';
+    ctx.fillText(b.desc, b.x + b.w / 2, b.y + 66);
+  }
+}
+
 function hoverUpgradeCard(x, y, w, h) {
   if (!upgradeChoice) return false;
   return input.mouse.x >= x && input.mouse.x <= x + w && input.mouse.y >= y && input.mouse.y <= y + h;
@@ -8035,8 +8168,8 @@ function update(dt) {
   const flying = GAME.state === 'playing' && player.alive && mission && !mission.complete && !mission.failed;
   AudioSys.updateEngine(flying ? clamp(player.speed / (CFG.maxSpeed + CFG.abSpeed), 0, 1) : 0);
   AudioSys.setPaused(GAME.state === 'paused');   // P34.2: 暂停 → 全部游戏音频静音/冻结; 其他状态解除(幂等)
-  if (GAME.state === 'playing' && upgradeChoice) return;
-  updateTransition(dt);
+  updateTransition(dt);   // P36-R1: 过渡动画先于询问冻结推进——淡入完成后询问浮层可见, 不被黑屏盖住
+  if (GAME.state === 'playing' && (upgradeChoice || controlSchemeAsk)) return;   // P36: 询问期间冻结 gameplay(与升级模态一致)
   updateWrecks(dt);
   updateCombo(dt);
   if (GAME.state === 'playing') {
@@ -8130,6 +8263,7 @@ function draw() {
     drawSelect();
   }
   if (GAME.state === 'playing' && upgradeChoice) drawUpgradeChoice();
+  if (GAME.state === 'playing' && controlSchemeAsk && !upgradeChoice) drawControlSchemeAsk();   // P36: 首次操作方式询问
   drawTransition();
   if (typeof ChapterCard !== 'undefined' && ChapterCard.isActive()) ChapterCard.draw();
 }
