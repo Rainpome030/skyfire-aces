@@ -2319,12 +2319,66 @@ function explode(x, y, power, big) {
   AudioSys.explosion(big);
 }
 
+// ---------- P32 普通敌机命中反馈(视觉闪白立即消费 + 离散反馈 50ms 聚合) ----------
+// 视觉: 敌机绘制(drawPlaneShape)立即读取 hitFlash 闪白 ENEMY_HIT_FLASH 秒, 不等待聚合窗口, 按敌机独立维护。
+// 离散: 粒子/命中标记/音频/震动进聚合窗口 HIT_AGG_WINDOW; 聚合器只用游戏内 dt(禁 setTimeout); 暂停冻结并清空。
+// 聚合事件合同(稳定, 供 P34.2 音频直接消费, 不另建限频器):
+//   HitFeedback.queue: [{ type:'hit'|'kill', count, x, y, t }]
+//   - 'hit' : 窗口内普通命中聚合; count=次数(全局上限 HIT_AGG_MAX_COUNT, 多目标同帧不按目标数放大); (x,y)=最近命中点(世界坐标); t=发射时 gameTime。
+//   - 'kill': 窗口内击毁聚合; count=击毁数。爆炸/得分等即时反馈不经本聚合(killPlane 原样保留)。
+//   每 HIT_AGG_WINDOW 秒至多各发射一次; 消费方读 HitFeedback.queue 后自行清空(队列硬上限 8)。
+const HIT_AGG_WINDOW = 0.05;    // 离散反馈聚合窗口(秒), 可调
+const HIT_AGG_MAX_COUNT = 3;    // 单聚合事件计数上限(防事件风暴), 可调
+const ENEMY_HIT_FLASH = 0.08;   // 普通敌机受击闪白时长(秒), 可调(玩家受击 0.12 保持不变)
+const HitFeedback = {
+  acc: 0,            // 距上次发射的窗口累计(游戏 dt 驱动)
+  norm: 0,           // 窗口内普通命中次数
+  kills: 0,          // 窗口内击毁数
+  lx: 0, ly: 0,      // 最近一次命中点(世界坐标)
+  queue: [],         // 待消费聚合事件队列(见顶部合同注释)
+  markT: 0,          // 屏幕命中标记剩余时长(秒)
+  markX: 0, markY: 0,
+  noteHit: function (x, y) {          // 命中记账(视觉闪白已由 damagePlane 立即写入, 不经本聚合)
+    if (GAME.state !== 'playing') return;
+    this.norm++;
+    this.lx = x; this.ly = y;
+  },
+  noteKill: function () {
+    if (GAME.state !== 'playing') return;
+    this.kills++;
+  },
+  update: function (dt) {             // 每帧由主循环在 playing 分支调用; 暂停时不被调用(冻结)
+    if (this.markT > 0) this.markT = Math.max(0, this.markT - dt);
+    this.acc += dt;
+    if (this.acc < HIT_AGG_WINDOW) return;
+    this.acc = 0;
+    if (this.norm > 0) {
+      const c = Math.min(this.norm, HIT_AGG_MAX_COUNT);
+      this.queue.push({ type: 'hit', count: c, x: this.lx, y: this.ly, t: gameTime });
+      if (this.queue.length > 8) this.queue.splice(0, this.queue.length - 8);
+      if (particles.length < PARTICLE_SOFT_LIMIT) burstSpark(this.lx, this.ly, 4 + c * 2, 150, 0.3);
+      this.markT = 0.09; this.markX = this.lx; this.markY = this.ly;
+      this.norm = 0;
+    }
+    if (this.kills > 0) {
+      this.queue.push({ type: 'kill', count: this.kills, x: this.lx, y: this.ly, t: gameTime });
+      if (this.queue.length > 8) this.queue.splice(0, this.queue.length - 8);
+      this.kills = 0;
+    }
+  },
+  reset: function () {                // 暂停分支调用: 清空未发出的聚合反馈(冻结且恢复不补喷)
+    this.acc = 0; this.norm = 0; this.kills = 0;
+    this.queue.length = 0;
+    this.markT = 0;
+  }
+};
+
 // ---------- damage helpers ----------
 function damagePlane(p, dmg) {
   if (p && p.kind === 'wingman') return damageWingman(p, dmg);
   dmg *= (p.takeDmgMult || 1);
   p.hp -= dmg;
-  p.hitFlash = 0.12;
+  p.hitFlash = p.kind === 'player' ? 0.12 : ENEMY_HIT_FLASH;   // P32: 敌机闪白约 0.08s(立即消费, 重复命中重置不累加)
   if (p.kind === 'player') {
     GAME.damageTaken += Math.min(dmg, p.hp + dmg);
     AudioSys.hit();
@@ -2455,6 +2509,7 @@ function killPlane(p) {
     return;
   }
   GAME.kills++;
+  HitFeedback.noteKill();   // P32: 击毁聚合事件(P34.2 音频直接消费)
   if (big && typeof SlowMo !== 'undefined' && SlowMo.trigger) SlowMo.trigger(0.35, 0.3);
   const pts = p.score || 100;
   const gainedPts = player.buffs.score ? pts * 2 : pts;
@@ -3105,7 +3160,7 @@ function updateBullets(dt) {
             if (dist(hx, hy, other.x, other.y) < b.blast + other.r) damagePlane(other, b.dmg * 0.55);
           }
         }
-        burstSpark(hx, hy, 3, 130, 0.25);   // 命中特效位于扫掠交点
+        HitFeedback.noteHit(hx, hy);   // P32: 离散命中反馈进 50ms 聚合窗口(视觉闪白由 damagePlane 立即写入)
         if (b.source !== 'wingman') GAME.shotsHit++;
         b.hitCount++;
         b.lastHit = bestE;
@@ -3238,6 +3293,7 @@ function chooseEnemyTarget(e, dt) {
 
 function updateEnemy(e, dt) {
   chooseEnemyTarget(e, dt);
+  if (e.hitFlash > 0) e.hitFlash = Math.max(0, e.hitFlash - dt);   // P32: 敌机受击闪白递减(绘制立即消费)
   if (e.dead) return;
   if (e.kind === 'drone') return updateDrone(e, dt);
   if (e.kind === 'kamikaze') return updateKamikaze(e, dt);
@@ -5765,6 +5821,16 @@ function drawPlaneShape(p) {
   } else {
     drawFighterJet(p);
   }
+  if (p.hitFlash > 0 && p.kind !== 'player' && p.kind !== 'wingman') {
+    // P32: 敌机受击闪白立即消费(不等待聚合窗口); 白色圆光叠加, 强度随剩余时长衰减
+    const ratio = clamp(p.hitFlash / ENEMY_HIT_FLASH, 0, 1);
+    ctx.globalAlpha = 0.85 * ratio;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(0, 0, 30, 0, TAU);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
   ctx.restore();
 }
 
@@ -6897,6 +6963,23 @@ function drawHUD() {
     drawOffscreenArrow(m.transport.x, m.transport.y, '#4ecb71');
   }
 
+  // P32 命中标记: 聚合命中后 ~90ms 在命中点画白色小十字(离散反馈通道, 随聚合窗口限频)
+  if (HitFeedback.markT > 0 && player.alive) {
+    const hth = -Math.PI / 2 - player.heading;
+    const hrx = HitFeedback.markX - cam.x + cam.shakeX;
+    const hry = HitFeedback.markY - cam.y + cam.shakeY;
+    const hmx = W / 2 + (hrx * Math.cos(hth) - hry * Math.sin(hth)) * cam.zoom;
+    const hmy = H * CAM_ANCHOR_Y + (hrx * Math.sin(hth) + hry * Math.cos(hth)) * cam.zoom;
+    const hma = clamp(HitFeedback.markT / 0.09, 0, 1);
+    ctx.strokeStyle = 'rgba(255,255,255,' + (0.9 * hma).toFixed(3) + ')';
+    ctx.lineWidth = 2;
+    const hms = 6 + (1 - hma) * 4;
+    ctx.beginPath();
+    ctx.moveTo(hmx - hms, hmy); ctx.lineTo(hmx + hms, hmy);
+    ctx.moveTo(hmx, hmy - hms); ctx.lineTo(hmx, hmy + hms);
+    ctx.stroke();
+  }
+
   // damage vignette
   const dmgAlpha = clamp((100 - player.hp) / 100 * 0.55 + player.hitFlash * 0.7, 0, 0.75);
   if (dmgAlpha > 0.02) {
@@ -7738,6 +7821,7 @@ function update(dt) {
       updateWingmanCollisions(dt);
       updateBullets(dt);
       updateMissiles(dt);
+      HitFeedback.update(dt);   // P32: 离散反馈聚合推进(游戏 dt, 禁 setTimeout)
       updatePickups(dt);
       updateParticles(dt);
       updateCamera(dt);
@@ -7751,6 +7835,7 @@ function update(dt) {
     }
   } else if (GAME.state === 'paused') {
     // keep world visible but frozen
+    HitFeedback.reset();   // P32: 暂停清空未发出的聚合反馈(冻结且恢复不补喷)
   } else if (GAME.state === 'title' || GAME.state === 'briefing' || GAME.state === 'complete' || GAME.state === 'gameover' || GAME.state === 'hangar' || GAME.state === 'achievements' || GAME.state === 'select') {
     updateParticles(dt);
   }
