@@ -3488,8 +3488,33 @@ function updateBuffs(dt) {
   }
 }
 
+// [P30] 主动换型：立即装备本次选择的新武器对象；历史同 ID 对象保留供合成/回退，不做 count 合并
+function equipIncomingWeapon(id, quality) {
+  const def = DROP_WEAPONS[id];
+  const w = makeWeapon(id, quality);
+  if (w.limited) {
+    GAME.weapons = GAME.weapons.filter(x => !x.limited || x.ammo > 0);
+    GAME.weapons.push(w);
+    player.weapon = w;
+    addToast('已切换为 ' + w.name + '（弹药 ×' + w.ammo + '）', QUALITY_COLOR[quality], 16);
+    AudioSys.pickup();
+    return;
+  }
+  if (!w.limited) w.count = 1;
+  GAME.weapons = GAME.weapons.filter(x => !x.limited || x.ammo > 0);
+  GAME.weapons.push(w);
+  player.weapon = w;
+  addToast('已切换为 ' + QUALITY_NAME[quality] + ' ' + w.name, QUALITY_COLOR[quality], 16);
+  AudioSys.pickup();
+}
+
 function applyWeapon(id, quality) {
   if (id === 'default') return;
+  // [P30] 主动换型：任何历史同 ID 品质/合成判断之前先处理不同 ID 的立即装备
+  const switchingType = player.weapon && player.weapon.id !== id;
+  if (switchingType) {
+    return equipIncomingWeapon(id, quality); // 立即装备本次选择
+  }
   const def = DROP_WEAPONS[id];
   const qIdx = QUALITY_ORDER.indexOf(quality);
   const sameId = GAME.weapons.filter(w => w.id === id && (!w.limited || w.ammo > 0));
