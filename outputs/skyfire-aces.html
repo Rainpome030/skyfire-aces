@@ -1096,6 +1096,8 @@ const QUALITY_MULT = { common: 0.8, good: 1, rare: 1.3 };
 const QUALITY_NAME = { common: '普通', good: '良好', rare: '稀有' };
 const QUALITY_COLOR = { common: '#dfe9f2', good: '#54c7ff', rare: '#ffd166' };
 const QUALITY_ORDER = ['common', 'good', 'rare'];
+const TOUCH_AUTO_FIRE_RANGE_FACTOR = 0.9;
+const TOUCH_AUTO_FIRE_CONE = 0.35;
 
 const DROP_WEAPONS = {
   scatter: {
@@ -2941,9 +2943,22 @@ function updatePlayer(dt) {
   }
 
   const wantFire = isActionDown('gun') || input.fireHeld || input.isTouch; // 触屏自动机炮(任务书 20)
+  const manualFire = isActionDown('gun') || input.fireHeld;
+  const touchAutoFire = input.isTouch && !manualFire;
   const wantMsl = isActionDown('missile') || input.mslHeld;
-  if (wantFire) firePlayerGuns();
+  if (wantFire && (!touchAutoFire || !player.weapon || !player.weapon.limited || hasTouchAutoFireTarget(player.weapon))) firePlayerGuns();
   if (wantMsl) firePlayerMissile();
+}
+
+function hasTouchAutoFireTarget(w) {
+  const gateRange = TOUCH_AUTO_FIRE_RANGE_FACTOR * w.speed * w.life;
+  const gateRange2 = gateRange * gateRange;
+  return enemies.some(e => {
+    if (!e || e.dead || e.retreat || e.hp <= 0) return false;
+    if (dist2(player.x, player.y, e.x, e.y) > gateRange2) return false;
+    const enemyAngle = angleTo(player.x, player.y, e.x, e.y);
+    return Math.abs(angDiff(player.heading, enemyAngle)) <= TOUCH_AUTO_FIRE_CONE;
+  });
 }
 
 function firePlayerGuns() {
