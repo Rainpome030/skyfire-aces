@@ -4156,6 +4156,11 @@ function startMission(index, mode) {
   GAME.mode = mode || 'campaign';
   upgradeChoice = null;
   GAME.missionIndex = index;
+  // P39: 战役任务尝试计数(会话内存态,不写存档;任务成功时清零)
+  if (GAME.mode !== 'endless') {
+    GAME.missionAttempts = GAME.missionAttempts || {};
+    GAME.missionAttempts[index] = (GAME.missionAttempts[index] || 0) + 1;
+  }
   GAME.time = 0;
   GAME.missionTime = 0;
   GAME.score = 0;
@@ -5247,6 +5252,83 @@ function grantAchievements() {
   if (fresh.length) saveNow();
 }
 
+// ---------- P39 结算文案:失败俏皮话分组随机(33 条命名常量,便于改词) ----------
+const FAIL_LINES_ENDLESS_1_5 = [
+  '刚热完身就返航啦，机库大门永远为你敞开。',
+  '本次试飞到此结束，地勤已经在擦停机位了。',
+  '云层还厚着呢，先回塔台喝口热茶再升空。'
+];
+const FAIL_LINES_ENDLESS_6_10 = [
+  '战果不错，只是云里还藏着几架坏家伙。',
+  '机翼有点累了，保养一下，下一轮更利索。',
+  '弹舱清空的姿势很帅，补给站见。'
+];
+const FAIL_LINES_ENDLESS_11_15 = [
+  '打得漂亮！这波敌人是组团来给你刷熟练度的。',
+  '差一点就刷新纪录啦，纪录在冲你招手。',
+  '王牌也需要中场休息，咖啡已经热好了。'
+];
+const FAIL_LINES_ENDLESS_OVER15 = [
+  '十六波都扛过来了，你已经是这条航线的传说。',
+  '弹尽粮绝也能优雅返航，这就是王牌风范。',
+  '天空都记得你的航迹，休息片刻再战。',
+  '敌军今晚的作战会议主题：讨论你怎么这么难缠。',
+  '这一局够写进队史了，荣誉墙给你留了位置。',
+  '引擎冒烟也挡不住你，下回让它歇口气。',
+  '深空都在为你鼓掌，先回基地加满油。',
+  '连王牌都有累的时候，你的记录已经闪闪发光。',
+  '这一轮打得对面怀疑机生，值得开个庆功会。',
+  '航迹云还没散，你的传说已经开始流传。',
+  '塔台已为你清空跑道，随时欢迎再次升空。',
+  '这么高的波数，地勤看了都竖起大拇指。',
+  '机翼上挂满星星的你，休息也是战术的一部分。',
+  '敌军电台都在问：那架飞机什么时候回来？',
+  '你是这片天空的常客，稍作补给再创纪录。'
+];
+const FAIL_LINES_CAMPAIGN_1 = [
+  '第一次侦察就摸清敌情了，下次出击更有底气。',
+  '首战收集的情报很珍贵，塔台已更新战术。',
+  '新手光环先攒着，下一轮就是你发光的时候。'
+];
+const FAIL_LINES_CAMPAIGN_2_3 = [
+  '战术越打越清晰，就差最后一下了。',
+  '敌机套路已经被你摸透，就差捅破那层窗户纸。',
+  '每一次升空都在进步，胜利已经在倒计时。'
+];
+const FAIL_LINES_CAMPAIGN_4PLUS = [
+  '王牌也是摔出来的，这关只是脾气比较倔。',
+  '多飞几遍航线而已，你离通关只差一层云。',
+  '敌机开始紧张了，因为它们知道你还会回来。'
+];
+// 自由模式失败分组:15 波内每 5 波一组(1-5/6-10/11-15),>15 波走 15 条大池
+function failLineGroupEndless(waves) {
+  if (waves <= 5) return FAIL_LINES_ENDLESS_1_5;
+  if (waves <= 10) return FAIL_LINES_ENDLESS_6_10;
+  if (waves <= 15) return FAIL_LINES_ENDLESS_11_15;
+  return FAIL_LINES_ENDLESS_OVER15;
+}
+// 战役失败分组:按本次任务尝试次数(第 1 次/第 2-3 次/第 4 次及以上)
+function failLineGroupCampaign(attempts) {
+  if (attempts <= 1) return FAIL_LINES_CAMPAIGN_1;
+  if (attempts <= 3) return FAIL_LINES_CAMPAIGN_2_3;
+  return FAIL_LINES_CAMPAIGN_4PLUS;
+}
+// 组内随机选 1 条:结算瞬间单次消费 Math.random(),与其它随机流无调用顺序依赖
+function pickFailLine(pool) {
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+// 结算统计行:自由模式(isEndless)不含「命中率」,其余统计行保持
+function buildGameOverStats(s, isEndless) {
+  const mm = Math.floor(s.time / 60), ss = Math.floor(s.time % 60);
+  const rows = [
+    ['存活时间', mm + ':' + (ss < 10 ? '0' : '') + ss],
+    ['击坠数', s.kills]
+  ];
+  if (!isEndless) rows.push(['命中率', Math.round(s.accuracy * 100) + '%']);
+  rows.push(['得分', fmt(s.score)]);
+  return rows;
+}
+
 function finishMission(success) {
   if (success) {
     const def = mission.def;
@@ -5275,7 +5357,13 @@ function finishMission(success) {
       missionName: def.name,
       code: def.code
     };
+    // P39: 战役任务成功 → 该任务尝试计数清零(下次失败回到「第 1 次」组)
+    if (!mission.endless && GAME.missionAttempts) delete GAME.missionAttempts[GAME.missionIndex];
   } else {
+    // P39: 失败俏皮话按战绩分组随机(自由模式=本局波数, 战役=该任务尝试次数)
+    const wavesDone = mission.endless ? mission.waveIndex : 0;
+    const attemptsDone = mission.endless ? 0 : ((GAME.missionAttempts && GAME.missionAttempts[GAME.missionIndex]) || 1);
+    const failPool = mission.endless ? failLineGroupEndless(wavesDone) : failLineGroupCampaign(attemptsDone);
     GAME.endStats = {
       success: false,
       time: GAME.missionTime,
@@ -5285,7 +5373,10 @@ function finishMission(success) {
       score: GAME.score,
       rank: '-',
       missionName: mission.def.name,
-      code: mission.def.code
+      code: mission.def.code,
+      waves: wavesDone,
+      attempts: attemptsDone,
+      failLine: pickFailLine(failPool)
     };
   }
   if (mission.endless) {
@@ -7991,18 +8082,20 @@ function drawGameOver() {
   ctx.fill(); ctx.stroke();
   ctx.textAlign = 'center';
   ctx.fillStyle = '#ff6b5e';
-  ctx.font = '900 ' + Math.round(Math.min(36, W * 0.048)) + 'px "Microsoft YaHei", sans-serif';
-  ctx.fillText(s.success ? '出击结束' : '任务失败', W / 2, by + 54);
+  if (s.success) {
+    ctx.font = '900 ' + Math.round(Math.min(36, W * 0.048)) + 'px "Microsoft YaHei", sans-serif';
+    ctx.fillText('出击结束', W / 2, by + 54);
+  } else {
+    // P39: 失败标题改俏皮话(finishMission 已按波数/尝试次数分组随机选好, 长句自适应字号)
+    const failLine = s.failLine || '任务结束';
+    const flSize = Math.round(Math.min(20, W * 0.026, (bw * 0.92) / Math.max(1, failLine.length)));
+    ctx.font = '900 ' + flSize + 'px "Microsoft YaHei", sans-serif';
+    ctx.fillText(failLine, W / 2, by + 54);
+  }
   ctx.fillStyle = '#f0b9b4';
   ctx.font = '600 ' + Math.round(Math.min(14, W * 0.019)) + 'px "Microsoft YaHei", sans-serif';
   ctx.fillText(s.code + '  ' + s.missionName, W / 2, by + 86);
-  const mm = Math.floor(s.time / 60), ss = Math.floor(s.time % 60);
-  const rows = [
-    ['存活时间', mm + ':' + (ss < 10 ? '0' : '') + ss],
-    ['击坠数', s.kills],
-    ['命中率', Math.round(s.accuracy * 100) + '%'],
-    ['得分', fmt(s.score)]
-  ];
+  const rows = buildGameOverStats(s, GAME.mode === 'endless');
   ctx.font = '600 ' + Math.round(Math.min(15, W * 0.02)) + 'px "Microsoft YaHei", sans-serif';
   let y = by + 130;
   for (const [k, v] of rows) {
