@@ -3,6 +3,7 @@ work/chrome-profile*/
 work/_*
 work/*.diff
 work/release-*-logs/
+.orchestra/
 
 # Local snapshots and backups
 outputs/备份/
