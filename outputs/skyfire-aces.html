@@ -53,7 +53,13 @@ const HUD_MARGIN_MIN = 16;   // 安全区边距下限(无安全区设备保持�
 const HUD_WINGMAN_ROWS = 2;  // 僚机 HUD 布局预留行(= WINGMAN_LAYOUT.hudMaxRows)
 // ---------- P38 HUD 重整常量 ----------
 const RADAR_AREA_SCALE = 0.5;   // 雷达面积缩放(可调; 0.5=面积减半→半径×√0.5)
-const RADAR_MARKER_SCALE = 0.5; // 雷达内指示标记缩放(可调; 0.5=敌机/僚机点缩小50%)
+const RADAR_MARKER_SCALE = 0.75; // P40: 雷达缩小后提高标记可读性
+const HUD_PANEL_FILL = 'rgba(6,14,24,0.80)';
+const HUD_PANEL_STROKE = 'rgba(180,210,230,0.32)';
+const HUD_PANEL_RADIUS = 8;
+const HUD_MISSION_WIDTH = 0.48;
+const HUD_RADAR_SCALE_P40 = 0.75;
+const HUD_CRITICAL_FONT_MIN = 12;
 function safeInsets() {
   return SAFE;   // 缓存值: 仅在 resize/orientationchange/visualViewport 变化时刷新(禁逐帧 getComputedStyle)
 }
@@ -256,7 +262,7 @@ function hudRects() {
   const ml = Math.max(HUD_MARGIN_MIN, SAFE.left);
   const R = (x, y, w, h) => ({ x, y, w, h });
   // 左上任务面板(P38: 删模式标题行, 高度收窄; 内容=任务时间+击杀数, 战役另加目标/进度)
-  const missionPanel = R(ml, mt, 288 * hudScale, 80 * hudScale);
+  const missionPanel = R(ml, mt, isTouch ? Math.min(288 * hudScale, W * HUD_MISSION_WIDTH) : 288 * hudScale, 80 * hudScale);
   // 僚机 HUD 面板(预留 2 行槽位, 实际行数由 drawWingmanHud 决定; P26 位置语义不变, 位置公式旧门禁锁定)
   const wingY = isTouch ? Math.max(mt + 96, H * 0.18) : mt + 96;
   const wingmanPanel = R(18 - 8, wingY - 8, 184 + 16, HUD_WINGMAN_ROWS * 28 + 10);
@@ -270,9 +276,11 @@ function hudRects() {
   // 右上分数/击坠/复活文字右缘: 触屏让出暂停槽
   const scoreRight = isTouch ? W - mr - PAUSE_BTN_SIZE - HUD_CONTROL_GAP : W - mr;
   // 左下窗口: 无尽=经验窗(Lv/经验/武器); 桌面战役=导弹/速度/高度+油门表; 触屏战役不画
-  const statusPanel = R(ml, H - mb - 108 * hudScale, 262 * hudScale, (isTouch ? 64 : 96) * hudScale);
+  const touchStatusH = Math.max(64, 64 * hudScale);
+  const statusPanel = R(ml, isTouch ? H - mb - 44 * hudScale - touchStatusH : H - mb - 108 * hudScale,
+    262 * hudScale, isTouch ? touchStatusH : 96 * hudScale);
   // 雷达(P38: 面积-50%命名常量; 桌面保留右下, 触屏移左上: 竖屏=僚机槽下, 横屏=任务面板下僚机槽右侧)
-  const radarR = Math.max(92, s * 0.145) * Math.sqrt(RADAR_AREA_SCALE);
+  const radarR = Math.max(92, s * 0.145) * Math.sqrt(RADAR_AREA_SCALE) * (isTouch ? HUD_RADAR_SCALE_P40 : 1);
   let rx, ry;
   if (!isTouch) {
     rx = W - mr - radarR;
@@ -293,10 +301,31 @@ function hudRects() {
     : R(W / 2 - hwW / 2, missionPanel.y + missionPanel.h + 16 * hudScale, hwW, 24 * hudScale);
   // 速度/高度显示小框(P38: 触屏油门条底部下方; 显示框不占命中区)
   const speedAltBox = isTouch
-    ? R(Math.min(throttle.x + throttle.w, msl.x - HUD_CONTROL_GAP) - 132 * hudScale,
-        throttle.y + throttle.h + HUD_CONTROL_GAP, 132 * hudScale, 22 * hudScale)
+    ? R(Math.min(throttle.x + throttle.w, msl.x - HUD_CONTROL_GAP) - Math.max(128, 132 * hudScale),
+        throttle.y + throttle.h + HUD_CONTROL_GAP, Math.max(128, 132 * hudScale), Math.max(28, 22 * hudScale))
     : null;
-  return { mt, mr, mb, ml, hudScale, missionPanel, wingmanPanel, throttle, msl, pauseBtn, scoreRight, statusPanel, radar, hpWin, speedAltBox };
+  // 限时操作提示: 优先使用左下状态窗与导弹键之间的横向空间; 窄屏回退到两者上方。
+  const hintH = 48 * hudScale;
+  const hintSideX = statusPanel.x + statusPanel.w + HUD_CONTROL_GAP;
+  const hintSideRight = msl.x - HUD_CONTROL_GAP;
+  const hintSideW = hintSideRight - hintSideX;
+  let hintBox;
+  if (isTouch && hintSideW >= 150) {
+    const hintW = Math.min(330 * hudScale, hintSideW);
+    hintBox = R(hintSideX, H - mb - hintH, hintW, hintH);
+  } else if (isTouch) {
+    const hintW = Math.min(330 * hudScale, W - ml - mr);
+    const hintX = clamp(W / 2 - hintW / 2, ml, W - mr - hintW);
+    const hintBottom = Math.min(msl.y, statusPanel.y) - HUD_CONTROL_GAP;
+    hintBox = R(hintX, hintBottom - hintH, hintW, hintH);
+  } else {
+    const radarLeft = radar.x - radar.r;
+    const hintLeft = statusPanel.x + statusPanel.w + HUD_CONTROL_GAP;
+    const hintRight = radarLeft - HUD_CONTROL_GAP;
+    const hintW = Math.min(420 * hudScale, Math.max(150, hintRight - hintLeft));
+    hintBox = R(clamp(W / 2 - hintW / 2, ml, W - mr - hintW), H - mb - hintH, hintW, hintH);
+  }
+  return { mt, mr, mb, ml, hudScale, missionPanel, wingmanPanel, throttle, msl, pauseBtn, scoreRight, statusPanel, radar, hpWin, speedAltBox, hintBox };
 }
 
 function canvasPointFromClient(clientX, clientY) {
@@ -6203,9 +6232,13 @@ function drawWingmanHud(allies) {
   try {
     ctx.globalAlpha = 1;
     ctx.shadowBlur = 0;
-    ctx.fillStyle = WINGMAN_COLORS.panel;
-    wingmanRoundRect(x - 8, y - 8, width + 16, list.length * rowH + 10, 7);
+    ctx.fillStyle = HUD_PANEL_FILL;
+    wingmanRoundRect(x - 8, y - 8, width + 16, list.length * rowH + 10, HUD_PANEL_RADIUS);
     ctx.fill();
+    ctx.strokeStyle = HUD_PANEL_STROKE;
+    ctx.lineWidth = 1;
+    wingmanRoundRect(x - 8, y - 8, width + 16, list.length * rowH + 10, HUD_PANEL_RADIUS);
+    ctx.stroke();
 
     list.forEach(function (a, index) {
       const yy = y + index * rowH;
@@ -7133,15 +7166,21 @@ function drawHUD() {
     ctx.font = '700 16px "Microsoft YaHei", sans-serif';
     ctx.fillText(mtt, W / 2, mt + 12);
   }
+  const drawPersistentPanel = (r, radius = HUD_PANEL_RADIUS) => {
+    ctx.fillStyle = HUD_PANEL_FILL;
+    roundRect(r.x, r.y, r.w, r.h, radius);
+    ctx.fill();
+    ctx.strokeStyle = HUD_PANEL_STROKE;
+    ctx.lineWidth = 1;
+    roundRect(r.x, r.y, r.w, r.h, radius);
+    ctx.stroke();
+  };
 
-  // top-left panel(P38: 删「endless sortie」模式标题; 仅任务时间+击杀数; 战役另加任务目标/进度)
-  ctx.fillStyle = 'rgba(6,14,24,0.58)';
-  roundRect(hr.missionPanel.x, hr.missionPanel.y, hr.missionPanel.w, hr.missionPanel.h, 8);
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
-  ctx.lineWidth = 1;
-  roundRect(hr.missionPanel.x, hr.missionPanel.y, hr.missionPanel.w, hr.missionPanel.h, 8);
-  ctx.stroke();
+  // top-left panel(P38: 删「endless sortie」模式标题; 仅任务时间+击杀数; 战役另加目标/进度)
+  drawPersistentPanel(hr.missionPanel);
+  ctx.save();
+  roundRect(hr.missionPanel.x, hr.missionPanel.y, hr.missionPanel.w, hr.missionPanel.h, HUD_PANEL_RADIUS);
+  ctx.clip();
   ctx.textAlign = 'left';
   ctx.font = '600 ' + Math.round(13 * hudScale) + 'px "Microsoft YaHei", sans-serif';
   ctx.fillStyle = '#eef4f8';
@@ -7171,6 +7210,7 @@ function drawHUD() {
     ctx.textAlign = 'right';
     ctx.fillText(Math.round(prog * 100) + '%', hr.missionPanel.x + hr.missionPanel.w - 12, hr.missionPanel.y + 74 * hudScale);
   }
+  ctx.restore();
 
   // top-right score(P38: 击杀数移入左上角面板, 此处仅保留分数+复活)
   ctx.textAlign = 'right';
@@ -7195,13 +7235,7 @@ function drawHUD() {
 
   // 血量窗口(P38: 顶部中央; 连杀奖计时在血条下; 矩形取 hudRects)
   const hw = hr.hpWin;
-  ctx.fillStyle = 'rgba(6,14,24,0.58)';
-  roundRect(hw.x, hw.y, hw.w, hw.h, 8);
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
-  ctx.lineWidth = 1;
-  roundRect(hw.x, hw.y, hw.w, hw.h, 8);
-  ctx.stroke();
+  drawPersistentPanel(hw);
   drawHudBar(hw.x + 12, hw.y + 4 * hudScale, hw.w - 24, 16 * hudScale, player.hp / player.maxHp, player.hp > 35 ? '#48c774' : '#ff5252', 'rgba(255,255,255,0.12)', '机体完整度', Math.ceil(player.hp) + '%');
   if (GAME.combo > 0) {
     ctx.fillStyle = '#ffd166';
@@ -7213,26 +7247,24 @@ function drawHUD() {
   // bottom-left status(P33: 抬入底部安全区; 矩形取 hudRects)
   const sp = hr.statusPanel;
   if (GAME.mode === 'endless' || !input.isTouch) {
-    ctx.fillStyle = 'rgba(6,14,24,0.58)';
-    roundRect(sp.x, sp.y, sp.w, sp.h, 8);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
-    roundRect(sp.x, sp.y, sp.w, sp.h, 8);
-    ctx.stroke();
+    drawPersistentPanel(sp);
     if (GAME.mode === 'endless') {
       // 经验窗(P38: 移入左下): Lv + 经验条 + 当前武器(品质/名称, 武器文本保持)
       ctx.textAlign = 'left';
       ctx.fillStyle = '#ffd166';
-      ctx.font = '700 ' + Math.round(13 * hudScale) + 'px "Microsoft YaHei", sans-serif';
-      ctx.fillText('Lv.' + GAME.level, sp.x + 12, sp.y + 16 * hudScale);
-      drawHudBar(sp.x + 56, sp.y + 8 * hudScale, sp.w - 68, 12 * hudScale, GAME.exp / expNeeded(GAME.level), '#9be3ff', 'rgba(255,255,255,0.12)', '', Math.floor(GAME.exp / expNeeded(GAME.level) * 100) + '%');
+      ctx.font = '700 ' + (input.isTouch ? Math.max(13, HUD_CRITICAL_FONT_MIN) : Math.round(13 * hudScale)) + 'px "Microsoft YaHei", sans-serif';
+      ctx.fillText('Lv.' + GAME.level, sp.x + 12, input.isTouch ? sp.y + 18 : sp.y + 16 * hudScale);
+      drawHudBar(sp.x + 56, input.isTouch ? sp.y + 7 : sp.y + 8 * hudScale, sp.w - 68,
+        input.isTouch ? Math.max(14, 12 * hudScale) : 12 * hudScale,
+        GAME.exp / expNeeded(GAME.level), '#9be3ff', 'rgba(255,255,255,0.12)', '', Math.floor(GAME.exp / expNeeded(GAME.level) * 100) + '%');
       const w = player.weapon || defaultWeapon();
       const wcol = QUALITY_COLOR[w.quality] || '#dfe9f2';
       ctx.fillStyle = wcol;
-      ctx.font = '600 ' + Math.round(11 * hudScale) + 'px "Microsoft YaHei", sans-serif';
-      ctx.fillText('武器 ' + QUALITY_NAME[w.quality] + ' ' + w.name, sp.x + 12, sp.y + 34 * hudScale);
+      ctx.font = '600 ' + (input.isTouch ? Math.max(HUD_CRITICAL_FONT_MIN, Math.round(11 * hudScale)) : Math.round(11 * hudScale)) + 'px "Microsoft YaHei", sans-serif';
+      const weaponLineY = input.isTouch ? sp.y + 45 : sp.y + 34 * hudScale;
+      ctx.fillText('武器 ' + QUALITY_NAME[w.quality] + ' ' + w.name, sp.x + 12, weaponLineY);
       ctx.textAlign = 'right';
-      ctx.fillText(w.limited ? '弹药 ' + w.ammo : '无限', sp.x + sp.w - 12, sp.y + 34 * hudScale);
+      ctx.fillText(w.limited ? '弹药 ' + w.ammo : '无限', sp.x + sp.w - 12, weaponLineY);
       if (!input.isTouch) {
         // 桌面保留: 导弹/速度/高度 + 油门表
         ctx.textAlign = 'left';
@@ -7283,11 +7315,11 @@ function drawHUD() {
   const radarR = hr.radar.r;
   const rx = hr.radar.x;
   const ry = hr.radar.y;
-  ctx.fillStyle = 'rgba(6,14,24,0.58)';
+  ctx.fillStyle = HUD_PANEL_FILL;
   ctx.beginPath();
   ctx.arc(rx, ry, radarR, 0, TAU);
   ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.24)';
+  ctx.strokeStyle = HUD_PANEL_STROKE;
   ctx.lineWidth = 1.4;
   ctx.beginPath();
   ctx.arc(rx, ry, radarR, 0, TAU);
@@ -7357,12 +7389,11 @@ function drawHUD() {
         const def = BUFF_DEFS[id];
         const st = player.buffs[id];
         const txt = id === 'shield' ? '盾 ×' + Math.max(0, st.n) : def.icon + ' ' + Math.ceil(st.t);
-        ctx.fillStyle = 'rgba(6,14,24,0.58)';
-        roundRect(bx, mt + 64 * hudScale, bw, bh, 6);
-        ctx.fill();
+        const buffPanel = { x: bx, y: mt + 64 * hudScale, w: bw, h: bh };
+        drawPersistentPanel(buffPanel);
         ctx.strokeStyle = def.color;
         ctx.lineWidth = 1.5;
-        roundRect(bx, mt + 64 * hudScale, bw, bh, 6);
+        roundRect(buffPanel.x, buffPanel.y, buffPanel.w, buffPanel.h, HUD_PANEL_RADIUS);
         ctx.stroke();
         ctx.fillStyle = def.color;
         ctx.font = '700 ' + Math.round(13 * hudScale) + 'px "Microsoft YaHei", sans-serif';
@@ -7464,15 +7495,19 @@ function drawHUD() {
     GAME.hintTimer -= 1 / 60;
     const a = clamp(GAME.hintTimer, 0, 1);
     ctx.globalAlpha = a * 0.85;
-    ctx.font = '600 ' + Math.round(12 * hudScale) + 'px "Microsoft YaHei", sans-serif';
+    drawPersistentPanel(hr.hintBox);
+    ctx.font = '600 ' + Math.max(11, Math.round(12 * hudScale)) + 'px "Microsoft YaHei", sans-serif';
     ctx.textAlign = 'center';
     ctx.fillStyle = '#e8f1f7';
     if (input.isTouch) {
-      ctx.fillText('左/右滑转向 · 快速双滑滚筒 · 右侧油门条 · 右下导弹', W / 2, H - hr.mb - 8);
+      const touchHint = '左/右滑转向 · 快速双滑滚筒 · 右侧油门条 · 右下导弹';
+      const hintBreak = touchHint.indexOf(' · 右侧油门条');
+      ctx.fillText(touchHint.slice(0, hintBreak), hr.hintBox.x + hr.hintBox.w / 2, hr.hintBox.y + 19 * hudScale);
+      ctx.fillText(touchHint.slice(hintBreak + 3), hr.hintBox.x + hr.hintBox.w / 2, hr.hintBox.y + 37 * hudScale);
     } else {
       ctx.fillText(GAME.mode === 'endless'
         ? '鼠标瞄准 · ' + prettyKey(bindFor('gun')) + ' 机炮 · ' + prettyKey(bindFor('missile')) + ' 导弹 · ' + prettyKey(bindFor('dash')) + ' 突进 · ' + prettyKey(bindFor('rollLeft')) + '/' + prettyKey(bindFor('rollRight')) + ' 滚筒 · ' + prettyKey(bindFor('pause')) + ' 暂停'
-        : '鼠标瞄准 · ' + prettyKey(bindFor('gun')) + ' 机炮 · ' + prettyKey(bindFor('missile')) + ' 导弹 · ' + prettyKey(bindFor('rollLeft')) + '/' + prettyKey(bindFor('rollRight')) + ' 滚筒 · ' + prettyKey(bindFor('afterburn')) + ' 加力 · ' + prettyKey(bindFor('pause')) + ' 暂停', W / 2, H - hr.mb - 8);
+        : '鼠标瞄准 · ' + prettyKey(bindFor('gun')) + ' 机炮 · ' + prettyKey(bindFor('missile')) + ' 导弹 · ' + prettyKey(bindFor('rollLeft')) + '/' + prettyKey(bindFor('rollRight')) + ' 滚筒 · ' + prettyKey(bindFor('afterburn')) + ' 加力 · ' + prettyKey(bindFor('pause')) + ' 暂停', hr.hintBox.x + hr.hintBox.w / 2, hr.hintBox.y + hr.hintBox.h / 2 + 4 * hudScale, hr.hintBox.w - 16);
     }
     ctx.globalAlpha = 1;
   }
@@ -7504,15 +7539,11 @@ function drawHUD() {
     ctx.fillText('油门', tb.x + tb.w / 2, tb.y - 8);
     // P38: 速度/高度显示小框(油门条底部下方; 显示框不占命中区)
     const sab = hr.speedAltBox;
-    ctx.fillStyle = 'rgba(6,14,24,0.58)';
-    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
-    ctx.lineWidth = 1;
-    roundRect(sab.x, sab.y, sab.w, sab.h, 6);
-    ctx.fill(); ctx.stroke();
+    drawPersistentPanel(sab);
     ctx.fillStyle = '#dfe9f2';
-    ctx.font = '600 ' + Math.round(11 * hudScale) + 'px "Microsoft YaHei", sans-serif';
+    ctx.font = '600 ' + Math.max(HUD_CRITICAL_FONT_MIN, Math.round(11 * hudScale)) + 'px "Microsoft YaHei", sans-serif';
     ctx.textAlign = 'left';
-    ctx.fillText('速度 ' + Math.round(player.speed) + ' 高度: ' + Math.round(player.altitude), sab.x + 6, sab.y + 15 * hudScale);
+    ctx.fillText('速度 ' + Math.round(player.speed) + ' 高度: ' + Math.round(player.altitude), sab.x + 6, sab.y + 19);
     // 触屏只画导弹键(机炮自动、滚筒改双滑,任务书 20)
     ctx.fillStyle = 'rgba(20,34,48,0.75)';
     ctx.strokeStyle = 'rgba(255,255,255,0.5)';
