@@ -190,10 +190,13 @@ try {
       return rawDrawHudBar(x,y,w,bh,pct,fill,bg,label,value);
     };
     const labelPixels=[];
+    const cleanupCoverage=[];
     for (const state of [{unlimited:true,count:0,want:'复活 ∞'},{unlimited:false,count:3,want:'复活 ×3'}]) {
       GAME.unlimitedRevive=state.unlimited; GAME.reviveCount=state.count;
       labels.length=0;
-      const zone={x:h.missionPanel.x,y:h.mt,w:h.scoreRight-h.missionPanel.x,h:64*h.hudScale};
+      const zone={x:h.missionPanel.x,y:h.mt,w:h.scoreRight-h.missionPanel.x,h:h.missionPanel.h};
+      cleanupCoverage.push({want:state.want,zoneH:zone.h,missionH:h.missionPanel.h,
+        covers:zone.y<=h.missionPanel.y+1e-6&&zone.y+zone.h>=h.missionPanel.y+h.missionPanel.h-1e-6});
       clear(zone); drawHUD();
       const q=labels[0];
       if(!q){ labelPixels.push({want:state.want,missing:true}); continue; }
@@ -227,9 +230,10 @@ try {
     const speedOk=!!speedText&&speedText.font>=12&&inside(speedText,h.speedAltBox)&&speedText.x1>=h.speedAltBox.x+6-1e-6&&speedText.x2<=h.speedAltBox.x+h.speedAltBox.w-6+1e-6;
     drawHudBar=rawDrawHudBar;
     ctx.fillText=rawFillText;
-    return {hintOn,hintOff,hint:h.hintBox||null,labelPixels,internalOk,speedOk,status:h.statusPanel,speed:h.speedAltBox,statusTexts,expBar,speedText,realDpr:d};
+    return {hintOn,hintOff,hint:h.hintBox||null,labelPixels,cleanupCoverage,internalOk,speedOk,status:h.statusPanel,speed:h.speedAltBox,statusTexts,expBar,speedText,realDpr:d};
   })()`);
   check('P1 timed hint positive/negative pixels are isolated in hintBox', !!pixels.hint && pixels.hintOn > 80 && pixels.hintOff === 0, JSON.stringify(pixels));
+  check('P2 fixture cleanup covers the complete mission panel height', pixels.cleanupCoverage.length===2 && pixels.cleanupCoverage.every(x=>x.covers), JSON.stringify(pixels.cleanupCoverage));
   check('P2 revive labels are complete and pixel-separated from mission panel', pixels.labelPixels.length===2 && pixels.labelPixels.every(x=>!x.missing&&x.text===x.want&&x.left>5&&x.right>2&&x.fits&&x.missionGold===0), JSON.stringify(pixels));
   check('P3 R1 status texts/bar fit without overlap at critical sizes', pixels.internalOk, JSON.stringify(pixels));
   check('P4 R1 longest speed/altitude text fits with 6px padding', pixels.speedOk, JSON.stringify(pixels));
