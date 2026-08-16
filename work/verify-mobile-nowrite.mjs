@@ -33,10 +33,10 @@ check('a10.静态:computeRating 权重 45/35/20 且无 accuracy 计算', html.in
 check('a11.静态:updateCamera 硬锁玩家', /cam\.x = player\.x; cam\.y = player\.y;/.test(html));
 check('a12.静态:雷达 blip 套旋转(表达式出现 ≥3 处:drawWorld/箭头/雷达)', cnt(/-Math\.PI \/ 2 - player\.heading/g) >= 3, 'count=' + cnt(/-Math\.PI \/ 2 - player\.heading/g));
 check('a13.静态:FIRE_RECT / ROLL_RECT 已删除', !html.includes('FIRE_RECT') && !html.includes('ROLL_RECT'));
-check('a14.静态:触屏提示文案更新(左/右滑转向 · 右侧油门条)', html.includes('左/右滑转向 · 快速双滑滚筒 · 右侧油门条 · 右下导弹') && !html.includes('上滑加速'));
+check('a14.静态:触屏提示文案包含滑动转向、油门与导弹开关', html.includes('左右滑转向 · 双滑滚筒 · 机炮自动') && html.includes('拖动油门 · 导弹开关') && !html.includes('上滑加速'));
 check('a15.静态:drawRatingPanel 无「命中」条', !html.includes("{ label: '命中'"));
 check('a16.静态:drawComplete 无「命中率」行', !html.slice(html.indexOf('function drawComplete'), html.indexOf('function drawGameOver')).includes('命中率'));
-check('a17.静态:触屏按钮区只画导弹键', cnt(/fillText\('导弹'/g) === 1 && !html.includes("fillText('机炮'"));
+check('a17.静态:触屏按钮区画导弹开关与突进,不画机炮键', html.includes("input.missileAuto ? 'ON' : 'OFF'") && html.includes("ctx.fillText('突进'") && !html.includes("fillText('机炮'"));
 check('a18.静态:drawHUD 画油门条「油门」小字', html.includes("fillText('油门'"));
 
 if (results.some((r) => !r.pass)) {

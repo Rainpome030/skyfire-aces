@@ -1,3 +1,12 @@
+# Local browser state and generated diagnostics
 work/chrome-profile*/
-work/_check.js
+work/_*
+work/*.diff
+work/release-*-logs/
+
+# Local snapshots and backups
+outputs/备份/
+备份/
+
+# Generated visual artifacts
 *.png
