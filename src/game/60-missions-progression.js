@@ -189,7 +189,8 @@ function startMission(index, mode) {
   player.weapon = defaultWeapon();
   applyPlaneSetup();
   GAME.exp = 0; GAME.level = 1; GAME.combo = 0; GAME.comboTimer = 0;
-  GAME.upgrades = {}; GAME.weapons = []; GAME.dash = null; GAME.synth = {}; upgradeChoice = null;
+  GAME.upgrades = {}; GAME.weapons = []; GAME.weaponCopies = {}; GAME.pendingBuffChoices = 0;
+  GAME.dash = null; GAME.synth = {}; upgradeChoice = null;
   player.buffs = {};
   cam.x = player.x; cam.y = player.y; cam.shake = 0; cam.zoom = 1;
 
@@ -242,19 +243,20 @@ function startEndless() {
   player.weapon = defaultWeapon();
   applyPlaneSetup();
   GAME.exp = 0; GAME.level = 1; GAME.combo = 0; GAME.comboTimer = 0;
-  GAME.upgrades = {}; GAME.weapons = []; GAME.dash = null; GAME.synth = {}; upgradeChoice = null;
+  GAME.upgrades = {}; GAME.weapons = []; GAME.weaponCopies = {}; GAME.pendingBuffChoices = 0;
+  GAME.dash = null; GAME.synth = {}; upgradeChoice = null;
   player.buffs = {};
   cam.x = player.x; cam.y = player.y; cam.shake = 0; cam.zoom = 1;
   mission = {
     def: { index: 0, code: 'ENDLESS SORTIE', name: '自由出击', theme: 'night', objective: '存活越久，击坠越多' },
     index: 0, escort: false, boss: false,
     spawned: 0, aliveTotal: 0, total: 999999,
-    waveIndex: 1, waveTimer: 1.2,
+    waveIndex: 1, completedWaves: 0, wavePhase: 'intermission', waveTimer: 0,
+    bossHistory: [], waveEliteKinds: [],
     transport: null, escortDone: false, failed: false, bossKilled: false, complete: false,
     endless: true
   };
-  spawnWave(['fighter', 'fighter']);
-  mission.spawned = 2;
+  spawnEndlessWave(1);
   setState('playing');
   prewarmRender();
 }
@@ -441,34 +443,168 @@ if (typeof module !== 'undefined' && module.exports) {
   };
 }
 
+const ENDLESS_BOSS_KINDS = ['ace', 'eye', 'king'];
+const ENDLESS_BOSS_NAMES = { ace: '绯红彗星', eye: '深渊之眼', king: '终焉之王' };
+
+function endlessBossHistoryGroups(wave, history) {
+  const source = Array.isArray(history) ? history : ((mission && mission.bossHistory) || []);
+  const completedGroups = Math.min(
+    Math.floor((Math.max(1, wave) - 1) / 5),
+    Math.floor(source.length / 5)
+  );
+  const groups = [];
+  for (let groupIndex = 0; groupIndex < completedGroups; groupIndex++) {
+    const start = groupIndex * 5;
+    const group = source.slice(start, start + 5).filter(kind => ENDLESS_BOSS_KINDS.includes(kind));
+    if (group.length === 5) groups.push(group);
+  }
+  return groups;
+}
+
+function selectEndlessEliteKinds(wave, history) {
+  return endlessBossHistoryGroups(wave, history).map(group => pick(group));
+}
+
+function endlessWaveKinds(wave) {
+  const lv = GAME.level;
+  const count = Math.min(26, 1 + Math.ceil(wave * 0.85) + Math.floor(lv / 12) + (lv > 60 ? 3 : 0));
+  const kinds = [];
+  for (let i = 0; i < count; i++) {
+    const r = Math.random();
+    if (r < 0.48) kinds.push('fighter');
+    else if (r < 0.76) kinds.push('gunner');
+    else kinds.push('bomber');
+  }
+  return kinds;
+}
+
+function spawnEndlessElite(kind, wave) {
+  const p = spawnPointAround(player.x, player.y, 850, 1250);
+  const e = makeEnemy(kind, p.x, p.y);
+  const scale = Math.min(0.58, 0.3 + Math.max(0, wave - 6) * 0.015);
+  e.hp = Math.max(1, Math.round(e.hp * scale));
+  e.maxHp = e.hp;
+  e.score = Math.max(1, Math.round(e.score * 0.4));
+  e.exp = Math.max(1, Math.round(e.exp * 0.4));
+  e.eliteMinion = true;
+  e.entered = true;
+  e.phase = 1;
+  e.heading = angleTo(e.x, e.y, player.x, player.y);
+  enemies.push(e);
+  return e;
+}
+
+function spawnEndlessWave(wave) {
+  if (!mission || !mission.endless) return;
+  mission.waveIndex = Math.max(1, wave);
+  mission.wavePhase = 'mobs';
+  mission.waveTimer = 0;
+  mission.boss = null;
+  mission.bossKilled = false;
+  const kinds = endlessWaveKinds(mission.waveIndex);
+  spawnWave(kinds);
+  const eliteKinds = selectEndlessEliteKinds(mission.waveIndex);
+  mission.waveEliteKinds = eliteKinds.slice();
+  eliteKinds.forEach((kind, groupIndex) => {
+    const elite = spawnEndlessElite(kind, mission.waveIndex);
+    elite.eliteHistoryGroup = groupIndex + 1;
+  });
+  mission.spawned += kinds.length + eliteKinds.length;
+  mission.aliveTotal = enemies.filter(e => !e.dead).length;
+  addText(player.x, player.y - 70, '第 ' + mission.waveIndex + ' 波来袭', '#ffd166', 18);
+  if (typeof MusicSys !== 'undefined' && MusicSys.play && GAME.state === 'playing') MusicSys.play('combat');
+}
+
+function spawnEndlessBoss(wave) {
+  if (!mission || !mission.endless || mission.wavePhase === 'boss') return;
+  const waveNumber = Math.max(1, wave);
+  mission.bossHistory = mission.bossHistory || [];
+  const historyIndex = waveNumber - 1;
+  const kind = mission.bossHistory[historyIndex] || ENDLESS_BOSS_KINDS[historyIndex % ENDLESS_BOSS_KINDS.length];
+  const p = spawnPointAround(player.x, player.y, 950, 1150);
+  const e = makeEnemy(kind, p.x, p.y);
+  const kindScale = { ace: 0.9, eye: 0.58, king: 0.48 }[kind] || 1;
+  const waveScale = 1 + Math.max(0, wave - 1) * 0.12;
+  e.hp = Math.max(1, Math.round(e.hp * kindScale * waveScale));
+  e.maxHp = e.hp;
+  e.score = Math.max(1, Math.round(e.score * (0.8 + wave * 0.08)));
+  e.exp = Math.max(1, Math.round(e.exp * (0.8 + wave * 0.08)));
+  e.isWaveBoss = true;
+  e.waveNumber = wave;
+  e.phase = 1;
+  e.heading = angleTo(e.x, e.y, player.x, player.y);
+  enemies.push(e);
+  mission.boss = e;
+  mission.bossHistory[historyIndex] = kind;
+  mission.bossKilled = false;
+  mission.wavePhase = 'boss';
+  mission.aliveTotal = enemies.filter(x => !x.dead).length;
+  addToast('第 ' + wave + ' 波 Boss · ' + ENDLESS_BOSS_NAMES[kind] + ' 来袭', '#ff8a80', 18);
+  if (typeof MusicSys !== 'undefined' && MusicSys.play) MusicSys.play('boss');
+}
+
+function finishEndlessWaveReward() {
+  if (!mission || !mission.endless || mission.wavePhase !== 'reward') return false;
+  mission.completedWaves = Math.max(mission.completedWaves || 0, mission.waveIndex);
+  mission.waveIndex++;
+  mission.wavePhase = 'intermission';
+  mission.waveTimer = 0.9;
+  mission.boss = null;
+  mission.bossKilled = false;
+  player.missiles = Math.min(player.maxMissiles, player.missiles + 8);
+  addText(player.x, player.y - 70, '整备完成 · 下一波即将来袭', '#7ee787', 17);
+  if (typeof MusicSys !== 'undefined' && MusicSys.play) MusicSys.play('combat');
+  return true;
+}
+
+function updateEndlessWave(dt) {
+  mission.aliveTotal = enemies.filter(e => !e.dead).length;
+  if (mission.wavePhase === 'mobs') {
+    if (mission.aliveTotal === 0) {
+      mission.wavePhase = 'bossPending';
+      mission.waveTimer = 0.8;
+      addText(player.x, player.y - 70, '高威胁目标正在接近', '#ff8a80', 17);
+    }
+    return;
+  }
+  if (mission.wavePhase === 'bossPending') {
+    mission.waveTimer -= dt;
+    if (mission.waveTimer <= 0) spawnEndlessBoss(mission.waveIndex);
+    return;
+  }
+  if (mission.wavePhase === 'boss') {
+    if (mission.boss && (mission.boss.dead || mission.bossKilled)) {
+      for (const e of enemies) {
+        if (e !== mission.boss && !e.dead) e.dead = true;
+      }
+      enemies = enemies.filter(e => e === mission.boss || !e.dead);
+      mission.aliveTotal = 0;
+      mission.wavePhase = 'reward';
+      mission.completedWaves = Math.max(mission.completedWaves || 0, mission.waveIndex);
+      showWeaponRewardChoice(mission.waveIndex);
+    }
+    return;
+  }
+  if (mission.wavePhase === 'reward') {
+    if (!upgradeChoice) showWeaponRewardChoice(mission.waveIndex);
+    return;
+  }
+  if (mission.wavePhase === 'intermission') {
+    mission.waveTimer -= dt;
+    if (mission.waveTimer <= 0) spawnEndlessWave(mission.waveIndex);
+  }
+}
+
 
 function updateMissionSpawn(dt) {
   if (!mission || mission.complete || mission.failed) return;
   if (mission.def && (mission.def.type === 'intercept' || mission.def.type === 'survive' || mission.def.type === 'race')) return;
-  mission.waveTimer -= dt;
-  mission.aliveTotal = enemies.filter(e => !e.dead).length;
   if (mission.endless) {
-    if (mission.aliveTotal === 0 && mission.waveTimer <= 0) {
-      const lv = GAME.level;
-      const n = Math.min(30, 2 + Math.ceil(mission.waveIndex * 0.9) + Math.floor(lv / 12) + (lv > 60 ? 3 : 0));
-      const kinds = [];
-      for (let i = 0; i < n; i++) {
-        const r = Math.random();
-        if (r < 0.42) kinds.push('fighter');
-        else if (r < 0.68) kinds.push('gunner');
-        else if (r < 0.92) kinds.push('bomber');
-        else kinds.push('ace');
-      }
-      if (lv > 20 && Math.random() < 0.4) kinds.push('ace');
-      spawnWave(kinds);
-      mission.spawned += kinds.length;
-      mission.waveIndex++;
-      player.missiles = Math.min(player.maxMissiles, player.missiles + 8);
-      addText(player.x, player.y - 70, '第 ' + mission.waveIndex + ' 波来袭', '#ffd166', 18);
-      mission.waveTimer = 3.5;
-    }
+    updateEndlessWave(dt);
     return;
   }
+  mission.waveTimer -= dt;
+  mission.aliveTotal = enemies.filter(e => !e.dead).length;
   const def = mission.def;
   if (mission.spawned < def.total && mission.aliveTotal < 4 && mission.waveTimer <= 0) {
     if (mission.boss) {
@@ -1358,7 +1494,7 @@ function finishMission(success) {
     if (!mission.endless && GAME.missionAttempts) delete GAME.missionAttempts[GAME.missionIndex];
   } else {
     // P39: 失败俏皮话按战绩分组随机(自由模式=本局波数, 战役=该任务尝试次数)
-    const wavesDone = mission.endless ? mission.waveIndex : 0;
+    const wavesDone = mission.endless ? (mission.completedWaves || 0) : 0;
     const attemptsDone = mission.endless ? 0 : ((GAME.missionAttempts && GAME.missionAttempts[GAME.missionIndex]) || 1);
     const failPool = mission.endless ? failLineGroupEndless(wavesDone) : failLineGroupCampaign(attemptsDone);
     GAME.endStats = {

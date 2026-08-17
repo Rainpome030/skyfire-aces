@@ -312,7 +312,7 @@ function killPlane(p) {
     addExp(gained);
     registerKillCombo();
   }
-  if (p.kind === 'ace' || p.kind === 'eye' || p.kind === 'king') mission.bossKilled = true;
+  if (mission && (p === mission.boss || p.isWaveBoss)) mission.bossKilled = true;
   grantAchievements();
   if (Math.random() < 0.32) {
     pickups.push({
@@ -325,7 +325,7 @@ function killPlane(p) {
 }
 
 function expMultiplier() {
-  return 1 + GAME.combo * 0.2;
+  return (1 + GAME.combo * 0.2) * (1 + (GAME.upgrades.expGain || 0) * 0.15);
 }
 
 function comboCountdown() {
@@ -349,7 +349,7 @@ function registerKillCombo() {
 function addExp(amount) {
   GAME.exp += amount;
   addText(player.x, player.y - 40, '+' + amount + ' EXP', '#9be3ff', 14);
-  let leveled = false;
+  let levelsGained = 0;
   while (GAME.level < 300 && GAME.exp >= expNeeded(GAME.level)) {
     GAME.exp -= expNeeded(GAME.level);
     GAME.level++;
@@ -357,10 +357,13 @@ function addExp(amount) {
     player.hp = Math.min(player.maxHp, player.hp + heal);
     addText(player.x, player.y - 76, '升级 Lv.' + GAME.level + ' 修复 +' + heal, '#7ee787', 17);
     AudioSys.pickup();
-    leveled = true;
+    levelsGained++;
   }
   if (GAME.level >= 300) GAME.exp = 0;
-  if (leveled) showUpgradeChoice();
+  if (levelsGained > 0) {
+    GAME.pendingBuffChoices = (GAME.pendingBuffChoices || 0) + levelsGained;
+    showUpgradeChoice();
+  }
 }
 
 function expNeeded(level) {
@@ -394,7 +397,8 @@ function hurtPlayer(dmg) {
     cam.shake = Math.min(10, cam.shake + 3);
     return;
   }
-  const mitigated = dmg;
+  const armor = Math.min(0.5, (GAME.upgrades.armor || 0) * 0.05);
+  const mitigated = dmg * (1 - armor);
   damagePlane(player, mitigated);
   player.hitFlash = Math.max(player.hitFlash, 0.3);
   cam.shake = Math.min(24, cam.shake + 8);
@@ -780,7 +784,8 @@ function updatePlayer(dt) {
     tryDash();
   }
   if (!isActionDown('dash')) player.dashPressed = false;
-  const targetSpeed = CFG.minSpeed + player.throttle * (CFG.maxSpeed - CFG.minSpeed) + (player.afterburn ? CFG.abSpeed : 0);
+  const runSpeedMult = 1 + (GAME.upgrades.moveSpeed || 0) * 0.08;
+  const targetSpeed = (CFG.minSpeed + player.throttle * (CFG.maxSpeed - CFG.minSpeed) + (player.afterburn ? CFG.abSpeed : 0)) * runSpeedMult;
   player.speed = lerp(player.speed, targetSpeed, 1 - Math.exp(-dt * (player.afterburn ? 2.2 : 1.4) * player.accelMult));
   movePlane(player, dt);
 
@@ -833,7 +838,7 @@ function updatePlayer(dt) {
   // speedRatio = player.speed / CFG.maxSpeed(370);rate = (speedRatio - 0.5) * 1600 高度/秒
   // ratio=0.27(怠速95)→ 约 -389/s,ratio=0.5(185)→ 0,ratio=1(370)→ +800/s,ratio=1.3(加力480)→ +1276/s
   // 系数 1600 可调(任务书 19:原 160 ×10);高度为 0 → 直接死亡(走 killPlane 现有流程)
-  const speedRatio = player.speed / CFG.maxSpeed;
+  const speedRatio = player.speed / (CFG.maxSpeed * runSpeedMult);
   player.altitude = Math.max(0, Math.min(9000, player.altitude + (speedRatio - 0.5) * 1600 * dt));
   if (player.altitude <= 0) { killPlane(player); return; }
   // 复活动画推进:动画结束后才开始 3 秒无敌计时(动画期间 invuln=1.2 已保证无敌)
@@ -881,20 +886,23 @@ function firePlayerGuns() {
   if (player.fireCd > 0 || !player.alive) return;
   const w = player.weapon;
   if (!w || w.ammo === 0) return;
-  player.fireCd = w.cd / (1 + (player.buffs.rate ? 0.5 : 0)) / player.fireRateMult;
+  const runRateMult = 1 + (GAME.upgrades.gunRate || 0) * 0.12;
+  player.fireCd = w.cd / (1 + (player.buffs.rate ? 0.5 : 0)) / player.fireRateMult / runRateMult;
   player.gunSide = -player.gunSide;
   const ox = Math.cos(player.heading), oy = Math.sin(player.heading);
   const px = -oy, py = ox;
-  const count = Math.max(1, Math.round(w.barrel || 2));
+  const count = Math.min(8, Math.max(1, Math.round(w.barrel || 2) + (GAME.upgrades.projectiles || 0)));
   const offs = [];
   if (count === 1) offs.push(0);
   else if (count === 2) offs.push(-8, 8);
   else if (count === 3) offs.push(-13, 0, 13);
   else if (count === 4) offs.push(-16, -6, 6, 16);
+  else for (let i = 0; i < count; i++) offs.push((i - (count - 1) / 2) * 9);
   for (const side of offs) {
     const spread = rand(-w.spread, w.spread);
     const a = player.heading + spread;
-    const dmgMult = (1 + (player.buffs.damage ? 0.6 : 0)) * player.gunDmgMult;
+    const dmgMult = (1 + (player.buffs.damage ? 0.6 : 0)) * player.gunDmgMult *
+      (1 + (GAME.upgrades.gunDamage || 0) * 0.15);
     bullets.push({
       x: player.x + ox * 36 + px * side,
       y: player.y + oy * 36 + py * side,
@@ -912,10 +920,9 @@ function firePlayerGuns() {
 
 function switchWeaponBack() {
   const list = GAME.weapons;
-  while (list.length > 1) {
-    list.pop();
-    const prev = list[list.length - 1];
-    if (prev && (!prev.limited || prev.ammo > 0)) {
+  for (let i = list.length - 1; i >= 0; i--) {
+    const prev = list[i];
+    if (prev !== player.weapon && prev && (!prev.limited || prev.ammo > 0)) {
       player.weapon = prev;
       addToast(prev.name + ' 已接替', QUALITY_COLOR[prev.quality], 15);
       return;
@@ -1204,7 +1211,7 @@ function updateEnemy(e, dt) {
       });
     }
   }
-  if (e.kind === 'ace' && !e.phase2 && e.hp < e.maxHp * 0.4) {
+  if (e.kind === 'ace' && !e.eliteMinion && !e.phase2 && e.hp < e.maxHp * 0.4) {
     e.phase2 = true;
     addRing(e.x, e.y, 140, 'rgba(255,80,60,0.9)', 0.8);
     addText(e.x, e.y - 40, '绯红彗星 进入第二阶段', '#ff8a80', 17);
@@ -1391,8 +1398,11 @@ function defaultWeapon() {
 
 function pickQuality() {
   const r = Math.random();
-  if (r < 0.62) return 'common';
-  if (r < 0.9) return 'good';
+  const luck = Math.max(0, GAME.upgrades.luck || 0);
+  const commonCutoff = Math.max(0.3, 0.62 - luck * 0.04);
+  const goodCutoff = Math.max(commonCutoff + 0.2, 0.9 - luck * 0.015);
+  if (r < commonCutoff) return 'common';
+  if (r < goodCutoff) return 'good';
   return 'rare';
 }
 
@@ -1496,104 +1506,95 @@ function updateBuffs(dt) {
   }
 }
 
-// [P30] 主动换型：立即装备本次选择的新武器对象；历史同 ID 对象保留供合成/回退，不做 count 合并
-function equipIncomingWeapon(id, quality) {
-  const def = DROP_WEAPONS[id];
-  const w = makeWeapon(id, quality);
-  if (w.limited) {
-    GAME.weapons = GAME.weapons.filter(x => !x.limited || x.ammo > 0);
-    GAME.weapons.push(w);
-    player.weapon = w;
-    addToast('已切换为 ' + w.name + '（弹药 ×' + w.ammo + '）', QUALITY_COLOR[quality], 16);
-    AudioSys.pickup();
-    return;
+function weaponCopyBucket(id) {
+  GAME.weaponCopies = GAME.weaponCopies || {};
+  let bucket = GAME.weaponCopies[id];
+  if (!bucket) {
+    bucket = { common: 0, good: 0, rare: 0 };
+    for (const w of GAME.weapons) {
+      if (w.id === id && QUALITY_ORDER.includes(w.quality)) {
+        bucket[w.quality] += Math.max(1, Math.round(w.count || 1));
+      }
+    }
+    GAME.weaponCopies[id] = bucket;
   }
-  if (!w.limited) w.count = 1;
-  GAME.weapons = GAME.weapons.filter(x => !x.limited || x.ammo > 0);
-  GAME.weapons.push(w);
-  player.weapon = w;
-  addToast('已切换为 ' + QUALITY_NAME[quality] + ' ' + w.name, QUALITY_COLOR[quality], 16);
-  AudioSys.pickup();
+  return bucket;
+}
+
+function syncWeaponSynth(id) {
+  GAME.synth = GAME.synth || {};
+  const bucket = weaponCopyBucket(id);
+  for (const q of QUALITY_ORDER) GAME.synth[id + ':' + q] = bucket[q] || 0;
+}
+
+function bestOwnedWeaponQuality(id) {
+  const bucket = weaponCopyBucket(id);
+  for (let i = QUALITY_ORDER.length - 1; i >= 0; i--) {
+    if ((bucket[QUALITY_ORDER[i]] || 0) > 0) return QUALITY_ORDER[i];
+  }
+  return null;
+}
+
+function weaponCopyProgress(id, quality) {
+  return weaponCopyBucket(id)[quality] || 0;
+}
+
+function addWeaponCopy(id, quality) {
+  const bucket = weaponCopyBucket(id);
+  const merges = [];
+  bucket[quality] = (bucket[quality] || 0) + 1;
+  for (let i = 0; i < QUALITY_ORDER.length - 1; i++) {
+    const from = QUALITY_ORDER[i];
+    const to = QUALITY_ORDER[i + 1];
+    while (bucket[from] >= 3) {
+      bucket[from] -= 3;
+      bucket[to] = (bucket[to] || 0) + 1;
+      merges.push({ from, to });
+    }
+  }
+  syncWeaponSynth(id);
+  return { bucket, merges, bestQuality: bestOwnedWeaponQuality(id) };
+}
+
+function equipBestOwnedWeapon(id, bestQuality, ammoGrant) {
+  const sameId = GAME.weapons.filter(w => w.id === id);
+  const previous = sameId.sort((a, b) => QUALITY_ORDER.indexOf(b.quality) - QUALITY_ORDER.indexOf(a.quality))[0] || null;
+  let weapon = previous && previous.quality === bestQuality ? previous : makeWeapon(id, bestQuality);
+  const wasCreated = !previous;
+  if (weapon !== previous && weapon.limited && previous && Number.isFinite(previous.ammo)) {
+    weapon.ammo = Math.max(0, previous.ammo);
+  }
+  if (weapon.limited && !wasCreated) weapon.ammo = Math.min(999, Math.max(0, weapon.ammo) + ammoGrant);
+  weapon.count = weaponCopyProgress(id, bestQuality);
+  GAME.weapons = GAME.weapons.filter(w => w.id !== id);
+  GAME.weapons.push(weapon);
+  player.weapon = weapon;
+  return weapon;
 }
 
 function applyWeapon(id, quality) {
-  if (id === 'default') return;
-  // [P30] 主动换型：任何历史同 ID 品质/合成判断之前先处理不同 ID 的立即装备
-  const switchingType = player.weapon && player.weapon.id !== id;
-  if (switchingType) {
-    return equipIncomingWeapon(id, quality); // 立即装备本次选择
-  }
+  if (id === 'default' || !DROP_WEAPONS[id] || !QUALITY_ORDER.includes(quality)) return;
+  // A new type is equipped immediately; repeat copies of one type never lower its equipped quality.
   const def = DROP_WEAPONS[id];
-  const qIdx = QUALITY_ORDER.indexOf(quality);
-  const sameId = GAME.weapons.filter(w => w.id === id && (!w.limited || w.ammo > 0));
-  let best = null, bestIdx = -1;
-  for (const w of sameId) {
-    const i = QUALITY_ORDER.indexOf(w.quality);
-    if (i > bestIdx) { best = w; bestIdx = i; }
+  const previousType = player.weapon ? player.weapon.id : 'default';
+  const previousBest = bestOwnedWeaponQuality(id);
+  const result = addWeaponCopy(id, quality);
+  const ammoGrant = def.limited ? makeWeapon(id, quality).ammo : 0;
+  const weapon = equipBestOwnedWeapon(id, result.bestQuality, ammoGrant);
+  const lastMerge = result.merges[result.merges.length - 1];
+  if (lastMerge) {
+    const kept = QUALITY_ORDER.indexOf(weapon.quality) > QUALITY_ORDER.indexOf(lastMerge.to)
+      ? ' · 当前保持' + QUALITY_NAME[weapon.quality]
+      : '';
+    addToast(QUALITY_NAME[lastMerge.from] + ' ' + def.name + ' ×3 合成为 ' + QUALITY_NAME[lastMerge.to] + kept, QUALITY_COLOR[lastMerge.to], 17);
+  } else if (previousType !== id) {
+    addToast('已切换为 ' + QUALITY_NAME[weapon.quality] + ' ' + weapon.name, QUALITY_COLOR[weapon.quality], 16);
+  } else if (quality !== 'rare') {
+    addToast(QUALITY_NAME[quality] + ' ' + def.name + ' 合成进度 ' + result.bucket[quality] + '/3' +
+      (previousBest && QUALITY_ORDER.indexOf(previousBest) > QUALITY_ORDER.indexOf(quality) ? ' · 当前品质不变' : ''), QUALITY_COLOR[quality], 15);
+  } else {
+    addToast('稀有 ' + def.name + ' 持有 ×' + result.bucket.rare, QUALITY_COLOR.rare, 15);
   }
-  if (best && qIdx < bestIdx) {
-    GAME.synth = GAME.synth || {};
-    const key = id + ':' + quality;
-    GAME.synth[key] = (GAME.synth[key] || 0) + 1;
-    if (GAME.synth[key] >= 3 && qIdx < QUALITY_ORDER.length - 1) {
-      GAME.synth[key] = 0;
-      const nextQ = QUALITY_ORDER[qIdx + 1];
-      const nextW = makeWeapon(id, nextQ);
-      if (!nextW.limited) nextW.count = 1;
-      GAME.weapons = GAME.weapons.filter(x => !x.limited || x.ammo > 0);
-      GAME.weapons.push(nextW);
-      const nextIdx = QUALITY_ORDER.indexOf(nextQ);
-      if (!best || nextIdx >= bestIdx) player.weapon = nextW;
-      addToast(QUALITY_NAME[quality] + ' ' + def.name + ' ×3 已合成 ' + QUALITY_NAME[nextQ] + ' ' + nextW.name, QUALITY_COLOR[nextQ], 17);
-      AudioSys.score();
-    } else {
-      addToast(QUALITY_NAME[quality] + ' ' + def.name + ' 合成进度 ' + (GAME.synth[key] || 0) + '/3', QUALITY_COLOR[quality], 15);
-      AudioSys.pickup();
-    }
-    return;
-  }
-  const existing = GAME.weapons.find(w => w.id === id && w.quality === quality && !w.limited);
-  if (existing && !def.limited) {
-    existing.count = (existing.count || 0) + 1;
-    const curIdx = QUALITY_ORDER.indexOf(quality);
-    if (existing.count >= 3 && curIdx < QUALITY_ORDER.length - 1) {
-      const upgraded = makeWeapon(id, QUALITY_ORDER[curIdx + 1]);
-      upgraded.count = 1;
-      const idx = GAME.weapons.indexOf(existing);
-      if (idx >= 0) GAME.weapons[idx] = upgraded;
-      player.weapon = upgraded;
-      addToast(QUALITY_NAME[quality] + ' ' + def.name + ' 已升级为 ' + QUALITY_NAME[upgraded.quality] + ' ' + upgraded.name, QUALITY_COLOR[upgraded.quality], 17);
-      AudioSys.score();
-      return;
-    }
-    addToast(QUALITY_NAME[quality] + ' ' + def.name + ' 合成进度 ' + (existing.count || 0) + '/3', QUALITY_COLOR[quality], 15);
-    AudioSys.pickup();
-    return;
-  }
-  const w = makeWeapon(id, quality);
-  if (w.limited) {
-    GAME.weapons = GAME.weapons.filter(x => !x.limited || x.ammo > 0);
-    const sameLimited = GAME.weapons.find(x => x.id === id && x.quality === quality);
-    if (sameLimited && sameLimited.ammo > 0) {
-      const bonus = w.ammo;
-      sameLimited.ammo = Math.min(999, sameLimited.ammo + bonus);
-      player.weapon = sameLimited;
-      addToast('已补充 ' + QUALITY_NAME[quality] + ' ' + w.name + ' +' + bonus, QUALITY_COLOR[quality], 16);
-      AudioSys.pickup();
-      return;
-    }
-    GAME.weapons.push(w);
-    player.weapon = w;
-    addToast('获得 ' + QUALITY_NAME[quality] + ' ' + w.name + ' 弹药 ×' + w.ammo, QUALITY_COLOR[quality], 16);
-    AudioSys.pickup();
-    return;
-  }
-  if (!w.limited) w.count = 1;
-  GAME.weapons = GAME.weapons.filter(x => !x.limited || x.ammo > 0);
-  GAME.weapons.push(w);
-  player.weapon = w;
-  addToast('获得 ' + QUALITY_NAME[quality] + ' ' + w.name, QUALITY_COLOR[quality], 16);
-  AudioSys.pickup();
 }
 
 function tryDash() {
@@ -1610,32 +1611,91 @@ function tryDash() {
   return true;
 }
 
-function showUpgradeChoice() {
-  if (GAME.mode !== 'endless' || upgradeChoice || !player.alive) return;
-  const bag = Object.keys(DROP_WEAPONS).slice();
+const RUN_UPGRADE_POOL = [
+  { id: 'gunDamage', name: '高爆弹芯', desc: '机炮伤害 +15%', color: '#ff8a80', maxStacks: 12 },
+  { id: 'gunRate', name: '超频供弹', desc: '机炮射速 +12%', color: '#ffd166', maxStacks: 12 },
+  { id: 'moveSpeed', name: '矢量引擎', desc: '飞行速度 +8%', color: '#54c7ff', maxStacks: 10 },
+  { id: 'maxHp', name: '强化机身', desc: '最大完整度 +15，并修复 15', color: '#7ee787', maxStacks: 20 },
+  { id: 'luck', name: '幸运航线', desc: '提高良好与稀有武器出现率', color: '#d7a7ff', maxStacks: 10 },
+  { id: 'projectiles', name: '并联炮口', desc: '每次射击弹丸数量 +1', color: '#ff9f43', maxStacks: 4 },
+  { id: 'expGain', name: '战斗分析', desc: '经验获取 +15%', color: '#9be3ff', maxStacks: 10 },
+  { id: 'missiles', name: '扩容挂架', desc: '导弹上限与当前导弹 +4', color: '#bfe3ff', maxStacks: 20 },
+  { id: 'armor', name: '复合装甲', desc: '所受伤害 -5%', color: '#aebecd', maxStacks: 10 }
+];
+
+function chooseThree(source) {
+  const bag = source.slice();
   const chosen = [];
   for (let i = 0; i < 3 && bag.length; i++) {
     const idx = Math.floor(Math.random() * bag.length);
     chosen.push(bag.splice(idx, 1)[0]);
   }
+  return chosen;
+}
+
+function showUpgradeChoice() {
+  if (GAME.mode !== 'endless' || upgradeChoice || !player.alive || (GAME.pendingBuffChoices || 0) <= 0) return false;
+  const available = RUN_UPGRADE_POOL.filter(u => (GAME.upgrades[u.id] || 0) < u.maxStacks);
+  const pool = available.length >= 3 ? available : RUN_UPGRADE_POOL;
   upgradeChoice = {
-    options: chosen.map(id => ({ id, quality: pickQuality() })),
-    index: -1,
+    kind: 'buff',
+    options: chooseThree(pool),
+    level: GAME.level,
+    timer: 0
+  };
+  GAME.pendingBuffChoices--;
+  upgradeChoiceSel = 0;
+  return true;
+}
+
+function showWeaponRewardChoice(wave) {
+  if (GAME.mode !== 'endless' || upgradeChoice || !player.alive) return false;
+  const bag = Object.keys(DROP_WEAPONS).slice();
+  upgradeChoice = {
+    kind: 'weapon',
+    options: chooseThree(bag).map(id => ({ id, quality: pickQuality() })),
+    wave,
     timer: 0
   };
   upgradeChoiceSel = 0;
+  return true;
+}
+
+function applyRunUpgrade(u) {
+  const before = GAME.upgrades[u.id] || 0;
+  if (before >= u.maxStacks) return;
+  GAME.upgrades[u.id] = before + 1;
+  if (u.id === 'maxHp') {
+    player.maxHp += 15;
+    player.hp = Math.min(player.maxHp, player.hp + 15);
+  } else if (u.id === 'missiles') {
+    player.maxMissiles += 4;
+    player.missiles = Math.min(player.maxMissiles, player.missiles + 4);
+  }
+  addToast(u.name + ' · 当前 ' + GAME.upgrades[u.id] + ' 层', u.color, 17);
+}
+
+function finishUpgradeChoice(kind) {
+  upgradeChoice = null;
+  if (kind === 'weapon' && mission && mission.endless && mission.wavePhase === 'reward' && typeof finishEndlessWaveReward === 'function') {
+    finishEndlessWaveReward();
+  }
+  if (!upgradeChoice && (GAME.pendingBuffChoices || 0) > 0) showUpgradeChoice();
 }
 
 function applyUpgrade(u) {
   if (!upgradeChoice) return;
-  applyWeapon(u.id, u.quality);
-  upgradeChoice = null;
+  const kind = upgradeChoice.kind || (u && u.quality ? 'weapon' : 'buff');
+  if (kind === 'buff') applyRunUpgrade(u);
+  else applyWeapon(u.id, u.quality);
+  finishUpgradeChoice(kind);
   AudioSys.score();
 }
 
 function skipUpgradeChoice() {
   if (!upgradeChoice) return false;
-  upgradeChoice = null;
+  const kind = upgradeChoice.kind || 'weapon';
+  finishUpgradeChoice(kind);
   AudioSys.click();
   return true;
 }

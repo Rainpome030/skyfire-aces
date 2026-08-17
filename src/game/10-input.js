@@ -1,7 +1,7 @@
 // ---------- input ----------
 const input = {
   keys: {},
-  mouse: { x: 0, y: 0, down: false, rdown: false, mid: false, movedAt: -99 },
+  mouse: { x: 0, y: 0, down: false, rdown: false, mid: false, buttons: {}, movedAt: -99 },
   touch: { active: false, mslId: null, mslStartX: 0, mslStartY: 0, dashId: null, swipeId: null, throttleBarId: null, pauseId: null },
   fireHeld: false,
   mslHeld: false,
@@ -78,10 +78,39 @@ function codeFromEvent(e) {
   return e.code || (e.key ? e.key.toUpperCase() : '');
 }
 
+const MOUSE_BUTTON_LABELS = ['左键', '中键', '右键', '侧键1', '侧键2'];
+
+function mouseCodeFromButton(button) {
+  return Number.isInteger(button) && button >= 0 && button < MOUSE_BUTTON_LABELS.length ? 'mouse' + button : '';
+}
+
+function mouseButtonFromCode(code) {
+  const match = /^mouse(\d+)$/.exec(code || '');
+  if (!match) return -1;
+  const button = Number(match[1]);
+  return button >= 0 && button < MOUSE_BUTTON_LABELS.length ? button : -1;
+}
+
+function setMouseButtonState(button, down) {
+  if (!mouseCodeFromButton(button)) return false;
+  input.mouse.buttons = input.mouse.buttons || {};
+  input.mouse.buttons[button] = !!down;
+  if (button === 0) input.mouse.down = !!down;
+  if (button === 1) input.mouse.mid = !!down;
+  if (button === 2) input.mouse.rdown = !!down;
+  return true;
+}
+
+function clearMouseButtonState() {
+  input.mouse.down = false;
+  input.mouse.mid = false;
+  input.mouse.rdown = false;
+  input.mouse.buttons = {};
+}
+
 function prettyKey(code) {
-  if (code === 'mouse0') return '左键';
-  if (code === 'mouse1') return '中键';
-  if (code === 'mouse2') return '右键';
+  const mouseButton = mouseButtonFromCode(code);
+  if (mouseButton >= 0) return MOUSE_BUTTON_LABELS[mouseButton];
   if (!code) return '未设置';
   const map = {
     KeyW: 'W', KeyA: 'A', KeyS: 'S', KeyD: 'D', KeyE: 'E', KeyP: 'P', KeyM: 'M',
@@ -97,9 +126,11 @@ function prettyKey(code) {
 
 function isActionDown(action) {
   const code = bindFor(action);
-  if (code === 'mouse0') return input.mouse.down;
-  if (code === 'mouse1') return input.mouse.mid;
-  if (code === 'mouse2') return input.mouse.rdown;
+  const mouseButton = mouseButtonFromCode(code);
+  if (mouseButton === 0) return input.mouse.down;
+  if (mouseButton === 1) return input.mouse.mid;
+  if (mouseButton === 2) return input.mouse.rdown;
+  if (mouseButton >= 3) return !!input.mouse.buttons[mouseButton];
   return !!input.keys[code];
 }
 
@@ -272,31 +303,25 @@ canvas.addEventListener('mousemove', (e) => {
 canvas.addEventListener('mousedown', (e) => {
   AudioSys.init(); AudioSys.resume();
   const p = screenPosFromEvent(e);
+  const mouseCode = mouseCodeFromButton(e.button);
+  if (mouseCode) e.preventDefault();
   input.mouse.x = p.x; input.mouse.y = p.y; input.mouse.movedAt = performance.now() / 1000;
-  if (captureBind && GAME.state === 'settings') {
-    if (settingsRowAt(p.x, p.y)) {
-      startBindCapture(settingsRowAt(p.x, p.y).action);
-      return;
-    }
-    if (e.button === 0 || e.button === 1 || e.button === 2) {
-      completeBindCapture('mouse' + e.button);
-      return;
-    }
+  if (captureBind && GAME.state === 'settings' && mouseCode) {
+    completeBindCapture(mouseCode);
+    return;
   }
   const consumed = handleCanvasPress(p.x, p.y);
-  if (!consumed) {
-    if (e.button === 0) input.mouse.down = true;
-    if (e.button === 1) input.mouse.mid = true;
-    if (e.button === 2) input.mouse.rdown = true;
+  if (!consumed && mouseCode) {
+    setMouseButtonState(e.button, true);
+    handleBoundPress(mouseCode, false, 'mouse');
   }
 });
 window.addEventListener('mouseup', (e) => {
-  if (e.button === 0) input.mouse.down = false;
-  if (e.button === 1) input.mouse.mid = false;
-  if (e.button === 2) input.mouse.rdown = false;
+  setMouseButtonState(e.button, false);
   input.fireHeld = false; input.mslHeld = false;
 });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+canvas.addEventListener('auxclick', (e) => e.preventDefault());
 
 canvas.addEventListener('touchstart', (e) => {
   e.preventDefault();
@@ -437,6 +462,32 @@ canvas.addEventListener('wheel', (e) => {
 
 function inRect(x, y, r) { return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h; }
 
+function handleBoundPress(code, repeat, source) {
+  if (isBound(code, 'mute') && !repeat) {
+    AudioSys.toggleMute();
+    if (typeof MusicSys !== 'undefined' && MusicSys.toggleMute) MusicSys.toggleMute();
+  }
+  const menuHit = isBound(code, 'menu');
+  const pauseHit = isBound(code, 'pause');
+  if (menuHit && !repeat && GAME.state === 'playing' && upgradeChoice) {
+    skipUpgradeChoice();
+  } else if ((pauseHit || menuHit) && !repeat) {
+    if (GAME.state === 'playing') requestPause(source);
+    else if (GAME.state === 'paused') requestResume();
+  }
+  if (isBound(code, 'confirm') && !repeat) handleConfirmKey();
+  if (!repeat && GAME.state === 'playing' && (isBound(code, 'turnLeft') || isBound(code, 'turnRight'))) {
+    const now = performance.now() / 1000;
+    const dir = isBound(code, 'turnLeft') ? 'left' : 'right';
+    if (player.lastDirTap && player.lastDirTap.dir === dir && now - player.lastDirTap.t < KEY_TAP_DOUBLE_GAP) {
+      tryBarrelRoll(dir);
+      player.lastDirTap = { dir: null, t: -99 };
+    } else {
+      player.lastDirTap = { dir, t: now };
+    }
+  }
+}
+
 window.addEventListener('keydown', (e) => {
   AudioSys.init(); AudioSys.resume();
   const code = codeFromEvent(e);
@@ -480,29 +531,7 @@ window.addEventListener('keydown', (e) => {
   input.keys[code] = true;
   input.keys[e.key.toLowerCase()] = true;
   if (code === 'Space') e.preventDefault();
-  if (isBound(code, 'mute') && !e.repeat) { AudioSys.toggleMute(); if (typeof MusicSys !== 'undefined' && MusicSys.toggleMute) MusicSys.toggleMute(); }
-  const menuHit = isBound(code, 'menu');
-  const pauseHit = isBound(code, 'pause');
-  if (menuHit && !e.repeat && GAME.state === 'playing' && upgradeChoice) {
-    skipUpgradeChoice();
-  } else if ((pauseHit || menuHit) && !e.repeat) {
-    if (GAME.state === 'playing') requestPause('keyboard');
-    else if (GAME.state === 'paused') requestResume();
-  }
-  if (isBound(code, 'confirm') && !e.repeat) handleConfirmKey();
-  if (!e.repeat && GAME.state === 'playing') {
-    // 双击 A/D 滚筒(任务书 21):同向两次点击(间隔 < KEY_TAP_DOUBLE_GAP)→ 滚筒;替换原 rollLeft/rollRight 按键直发
-    if (isBound(code, 'turnLeft') || isBound(code, 'turnRight')) {
-      const now = performance.now() / 1000;
-      const dir = isBound(code, 'turnLeft') ? 'left' : 'right';
-      if (player.lastDirTap && player.lastDirTap.dir === dir && now - player.lastDirTap.t < KEY_TAP_DOUBLE_GAP) {
-        tryBarrelRoll(dir);
-        player.lastDirTap = { dir: null, t: -99 }; // 防三连
-      } else {
-        player.lastDirTap = { dir, t: now };
-      }
-    }
-  }
+  handleBoundPress(code, e.repeat, 'keyboard');
 });
 window.addEventListener('keyup', (e) => {
   const code = codeFromEvent(e);

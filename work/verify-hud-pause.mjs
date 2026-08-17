@@ -46,7 +46,8 @@ check('S5 hudRects() 单一布局源: updateTouchRects 与 drawHUD 均消费 hud
   && slice('function drawWingmanHud', 'function drawPlaneShape').includes('hudRects()'));
 check('S6 requestPause(source)+requestResume 在场, 键盘/后台共用状态机(后台只请求不 toggle)',
   /function\s+requestPause\(source\)/.test(html) && /function\s+requestResume\(\)/.test(html)
-  && slice('window.addEventListener(\'keydown\'', 'window.addEventListener(\'keyup\'').includes('requestPause(')
+  && slice('window.addEventListener(\'keydown\'', 'window.addEventListener(\'keyup\'').includes("handleBoundPress(code, e.repeat, 'keyboard')")
+  && slice('function handleBoundPress', 'window.addEventListener(\'keydown\'').includes('requestPause(source)')
   && /window\.addEventListener\('blur', \(\) => \{ requestPause\('blur'\); \}\)/.test(html)
   && /if \(document\.hidden\) requestPause\('visibility'\)/.test(html));
 check('S7 updateCombo 暂停冻结守卫在场', slice('function updateCombo', 'function separateEnemies').includes("if (GAME.state !== 'playing') return;"));

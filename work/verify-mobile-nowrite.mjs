@@ -20,7 +20,7 @@ function check(name, cond, detail) {
 // ===== a. 静态检查(主文件文本)=====
 const html = readFileSync(FILE, 'utf8');
 const cnt = (re) => (html.match(re) || []).length;
-check('a1.静态:drawWorld 追尾旋转 rotate(-Math.PI/2 - player.heading)', html.includes('ctx.rotate(-Math.PI / 2 - player.heading)'));
+check('a1.静态:drawWorld 使用可切换视角角度', html.includes('ctx.rotate(cameraViewAngle())') && html.includes("save.cameraMode === CAMERA_WORLD_UP ? 0 : -Math.PI / 2 - player.heading"));
 check('a2.静态:飞机锚点 H*CAM_ANCHOR_Y(0.62) 与 CAM_ZOOM 0.85', /CAM_ANCHOR_Y = 0\.62/.test(html) && /CAM_ZOOM = 0\.85/.test(html));
 check('a3.静态:touchSwipe 手势对象', /const touchSwipe = \{ dir: null, active: false/.test(html));
 check('a4.静态:SWIPE_THRESH=28 / SWIPE_DOUBLE_GAP=0.6 / SWIPE_CRUISE 已删', /SWIPE_THRESH = 28/.test(html) && /SWIPE_DOUBLE_GAP = 0\.6/.test(html) && !html.includes('SWIPE_CRUISE'));
@@ -31,7 +31,8 @@ check('a8.静态:keydown 双击滚筒检测(复用 player.lastDirTap)', html.inc
 check('a9.静态:触屏自动开火 input.fireHeld || input.isTouch', html.includes("input.fireHeld || input.isTouch"));
 check('a10.静态:computeRating 权重 45/35/20 且无 accuracy 计算', html.includes('* 45') && html.includes('* 35') && html.includes('* 20') && !html.includes('accuracyScore'));
 check('a11.静态:updateCamera 硬锁玩家', /cam\.x = player\.x; cam\.y = player\.y;/.test(html));
-check('a12.静态:雷达 blip 套旋转(表达式出现 ≥3 处:drawWorld/箭头/雷达)', cnt(/-Math\.PI \/ 2 - player\.heading/g) >= 3, 'count=' + cnt(/-Math\.PI \/ 2 - player\.heading/g));
+check('a12.静态:世界/箭头/雷达共用视角函数', cnt(/cameraViewAngle\(\)/g) >= 6 && cnt(/-Math\.PI \/ 2 - player\.heading/g) === 1,
+  'camera=' + cnt(/cameraViewAngle\(\)/g) + ' formula=' + cnt(/-Math\.PI \/ 2 - player\.heading/g));
 check('a13.静态:FIRE_RECT / ROLL_RECT 已删除', !html.includes('FIRE_RECT') && !html.includes('ROLL_RECT'));
 check('a14.静态:触屏提示文案包含滑动转向、油门与导弹开关', html.includes('左右滑转向 · 双滑滚筒 · 机炮自动') && html.includes('拖动油门 · 导弹开关') && !html.includes('上滑加速'));
 check('a15.静态:drawRatingPanel 无「命中」条', !html.includes("{ label: '命中'"));

@@ -1,6 +1,5 @@
-// verify-weapon-switch.mjs — P30 主动选择不同武器立即换型 专项(RED-first)
-// 全部动态用例走真实 applyUpgrade -> applyWeapon 路径, 单个 CDP eval 内原子完成。
-// 运行: node work/verify-weapon-switch.mjs   (RED: 未改主文件时 W1/W2 与静态项失败)
+// verify-weapon-switch.mjs — 武器类型切换、品质产权与三合一专项
+// 全部动态用例走真实 applyUpgrade -> applyWeapon 路径。
 import { spawn } from 'node:child_process';
 import { readFileSync, rmSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,15 +21,15 @@ function check(name, pass, detail = '') {
 }
 
 // ---------- R1 静态: 可达路径与实现在场 ----------
-check('R1a 静态存在 switchingType 换型分支', /const\s+switchingType\s*=\s*player\.weapon\s*&&\s*player\.weapon\.id\s*!==\s*id/.test(html));
-check('R1b 静态存在 equipIncomingWeapon 立即装备函数', /function\s+equipIncomingWeapon\s*\(/.test(html));
+check('R1a 静态存在独立武器份数账本', /function\s+weaponCopyBucket\s*\(/.test(html));
+check('R1b 静态存在递归三合一结算', /function\s+addWeaponCopy\s*\(/.test(html));
 check('R1c applyWeapon 仅被 applyUpgrade 调用(可达路径唯一)', (html.match(/applyWeapon\(/g) || []).length === 2);
-check('R1d equipIncomingWeapon 仅被 applyWeapon 调用', (html.match(/equipIncomingWeapon\(/g) || []).length === 2);
+check('R1d 装备结算与份数结算分离', /function\s+equipBestOwnedWeapon\s*\(/.test(html));
 check('R1e 换型 toast 文案在场', html.includes('已切换为'));
-check('R1f 同ID防降级/三合一/有限补弹/回退规则原样保留',
-  /GAME\.synth\[key\]\s*=\s*\(GAME\.synth\[key\]\s*\|\|\s*0\)\s*\+\s*1/.test(html)
-  && html.includes('existing.count = (existing.count || 0) + 1')
-  && html.includes('sameLimited.ammo = Math.min(999, sameLimited.ammo + bonus)')
+check('R1f 同ID防降级/三合一/有限产权/回退规则在场',
+  html.includes('while (bucket[from] >= 3)')
+  && html.includes('GAME.weaponCopies')
+  && html.includes('weapon.ammo = Math.min(999')
   && /function\s+switchWeaponBack\s*\(/.test(html));
 
 // ---------- CDP harness ----------
@@ -72,7 +71,7 @@ class Run {
 const setup = `
   transition.active = false; if (ChapterCard.isActive()) ChapterCard.skip();
   startEndless(); if (ChapterCard.isActive()) ChapterCard.skip(); transition.active = false; GAME.state = 'playing';
-  GAME.weapons = []; GAME.synth = {}; player.weapon = defaultWeapon();
+  GAME.weapons = []; GAME.weaponCopies = {}; GAME.synth = {}; player.weapon = defaultWeapon();
   input.keys = {}; input.touch = { active: false, mslId: null, swipeId: null, throttleBarId: null }; input.fireHeld = false; input.mslHeld = false;
 `;
 const pickFn = `const pick = (id, q) => { upgradeChoice = { options: [{ id, quality: q }], index: -1, timer: 0 }; applyUpgrade(upgradeChoice.options[0]); };`;
@@ -90,7 +89,7 @@ const w1 = `(() => {
   bullets.length = 0; player.fireCd = 0; player.alive = true;
   firePlayerGuns();
   return { s1, s2, fin, volley: bullets.length, toastHit: ${toastOf('已切换为')} && ${toastOf('散射机炮')},
-           inv: GAME.weapons.map(w => w.id + ':' + w.quality + ':' + (w.count || 0)), synthKeys: Object.keys(GAME.synth) };
+           inv: GAME.weapons.map(w => w.id + ':' + w.quality + ':' + (w.count || 0)), copies: weaponCopyBucket('scatter') };
 })()`;
 
 // W2: scatter good 历史 -> pierce rare -> scatter common(不得被历史 best 截流)
@@ -101,9 +100,9 @@ const w2 = `(() => {
   GAME.weapons.push(sg, pr); player.weapon = pr;
   pick('scatter','common');
   return { id: player.weapon.id, q: player.weapon.quality, count: player.weapon.count,
-           isNewObj: player.weapon !== sg && player.weapon !== pr,
+           keptBest: player.weapon === sg,
            keepHistGood: GAME.weapons.some(w => w.id === 'scatter' && w.quality === 'good'),
-           invLen: GAME.weapons.length, synthKeys: Object.keys(GAME.synth),
+           invLen: GAME.weapons.length, copies: weaponCopyBucket('scatter'),
            toastHit: ${toastOf('已切换为')} && ${toastOf('散射机炮')} };
 })()`;
 
@@ -128,26 +127,38 @@ const w4 = `(() => {
   pick('scatter','common');
   const b = { q: player.weapon.quality, synth: GAME.synth['scatter:common'] || 0 };
   pick('scatter','common');
-  return { a, b, q: player.weapon.quality, synth: GAME.synth['scatter:common'] || 0, invQ: GAME.weapons.map(x => x.quality) };
+  return { a, b, q: player.weapon.quality, synth: GAME.synth['scatter:common'] || 0,
+           invQ: GAME.weapons.map(x => x.quality), copies: weaponCopyBucket('scatter') };
 })()`;
 
-// W5: 有限武器同 ID 补弹 + 耗尽回退 + 空弹清理(回归守卫)
+// W5: 有限武器耗尽后品质产权保留，低品质材料补弹但不降级
 const w5 = `(() => {
   ${setup} ${pickFn}
   const sc = makeWeapon('scatter','common'); sc.count = 1;
-  const lz = makeWeapon('laser','common');
-  const initial = lz.ammo;
+  const lz = makeWeapon('laser','rare'); lz.count = 1;
+  GAME.weaponCopies = { scatter: { common: 1, good: 0, rare: 0 }, laser: { common: 0, good: 0, rare: 1 } };
   GAME.weapons.push(sc, lz); player.weapon = lz;
-  pick('laser','common');
-  const fresh = makeWeapon('laser','common').ammo;
-  const ref = { ammo: lz.ammo, expected: Math.min(999, initial + fresh), same: player.weapon === lz, invLen: GAME.weapons.length };
   lz.ammo = 1; player.fireCd = 0; player.alive = true; firePlayerGuns();
   const fb = { id: player.weapon.id, toast: ${toastOf('已接替')} };
-  const lzA = makeWeapon('laser','common'); lzA.ammo = 0;
-  const lzB = makeWeapon('laser','good');
-  GAME.weapons.push(lzA, lzB); player.weapon = lzB;
+  pick('laser','common');
+  const restored = { id: player.weapon.id, q: player.weapon.quality, common: weaponCopyProgress('laser','common'), ammo: player.weapon.ammo };
   pick('heavy','common');
-  return { ref, fb, cl: { id: player.weapon.id, depletedGone: !GAME.weapons.some(x => x.limited && x.ammo <= 0), invLen: GAME.weapons.length } };
+  return { fb, restored, switched: { id: player.weapon.id, keepsRareLaser: GAME.weapons.some(x => x.id === 'laser' && x.quality === 'rare') } };
+})()`;
+
+// W6: 防降级只约束同类型；稀有 A 遇到普通 B 必须切换到普通 B
+const w6 = `(() => {
+  ${setup} ${pickFn}
+  pick('scatter','rare');
+  pick('scatter','common');
+  const sameType = { id: player.weapon.id, q: player.weapon.quality, common: weaponCopyProgress('scatter','common') };
+  pick('pierce','common');
+  return {
+    sameType,
+    otherType: { id: player.weapon.id, q: player.weapon.quality },
+    keepsRareA: GAME.weapons.some(x => x.id === 'scatter' && x.quality === 'rare'),
+    bCopies: weaponCopyProgress('pierce','common')
+  };
 })()`;
 
 const c = { name: 'P30', width: 1280, height: 720, port: 9891 };
@@ -157,18 +168,18 @@ try {
   await r.start();
   const w1o = await r.eval(w1);
   check('W1 前两步换型立即生效 scatter->pierce', w1o.s1.id === 'scatter' && w1o.s1.q === 'common' && w1o.s2.id === 'pierce' && w1o.s2.q === 'good', JSON.stringify({ s1: w1o.s1, s2: w1o.s2 }));
-  check('W1 最后立即散射common且count=1', w1o.fin.id === 'scatter' && w1o.fin.q === 'common' && w1o.fin.count === 1, JSON.stringify(w1o.fin));
+  check('W1 切回散射并累计到2/3', w1o.fin.id === 'scatter' && w1o.fin.q === 'common' && w1o.fin.count === 2 && w1o.copies.common === 2, JSON.stringify({ fin: w1o.fin, copies: w1o.copies }));
   check('W1 弹道 3 发(散射三管)', w1o.volley === 3, 'volley=' + w1o.volley);
   check('W1 HUD 名称为散射机炮', w1o.fin.name === '散射机炮', w1o.fin.name);
   check('W1 换型 toast「已切换为 散射机炮」', w1o.toastHit === true);
-  check('W1 换型不产生合成进度', w1o.synthKeys.length === 0, JSON.stringify(w1o.synthKeys));
+  check('W1 不同类型切换仍保留同类型合成进度', w1o.copies.common === 2, JSON.stringify(w1o.copies));
 
   const w2o = await r.eval(w2);
-  check('W2 不被历史 best 截流 立即散射common', w2o.id === 'scatter' && w2o.q === 'common', JSON.stringify({ id: w2o.id, q: w2o.q }));
-  check('W2 装备的是新对象且 count=1', w2o.isNewObj === true && w2o.count === 1);
+  check('W2 切回旧类型时装备历史最高good', w2o.id === 'scatter' && w2o.q === 'good', JSON.stringify({ id: w2o.id, q: w2o.q }));
+  check('W2 复用最高品质对象且 count=1', w2o.keptBest === true && w2o.count === 1);
   check('W2 历史 scatter good 保留', w2o.keepHistGood === true);
-  check('W2 库存 3 件', w2o.invLen === 3, 'invLen=' + w2o.invLen);
-  check('W2 不产生 synth 进度', w2o.synthKeys.length === 0, JSON.stringify(w2o.synthKeys));
+  check('W2 每种武器只保留一个运行对象', w2o.invLen === 2, 'invLen=' + w2o.invLen);
+  check('W2 普通scatter正常累计1/3', w2o.copies.common === 1 && w2o.copies.good === 1, JSON.stringify(w2o.copies));
   check('W2 换型 toast 在场', w2o.toastHit === true);
 
   const w3o = await r.eval(w3);
@@ -178,12 +189,17 @@ try {
   const w4o = await r.eval(w4);
   check('W4 低品质不降级 仍good synth=1', w4o.a.same === true && w4o.a.q === 'good' && w4o.a.synth === 1, JSON.stringify(w4o.a));
   check('W4 synth 累计到 2', w4o.b.q === 'good' && w4o.b.synth === 2, JSON.stringify(w4o.b));
-  check('W4 三合一后仍 good 且 synth 归零', w4o.q === 'good' && w4o.synth === 0 && w4o.invQ.join(',') === 'good,good', JSON.stringify({ q: w4o.q, synth: w4o.synth, invQ: w4o.invQ }));
+  check('W4 三合一后good材料累计为2且装备不降级', w4o.q === 'good' && w4o.synth === 0 && w4o.invQ.join(',') === 'good' && w4o.copies.good === 2, JSON.stringify({ q: w4o.q, copies: w4o.copies, invQ: w4o.invQ }));
 
   const w5o = await r.eval(w5);
-  check('W5 同ID有限补弹=初始+新弹 同对象', w5o.ref.ammo === w5o.ref.expected && w5o.ref.same === true && w5o.ref.invLen === 2, JSON.stringify(w5o.ref));
   check('W5 耗尽回退到前一武器', w5o.fb.id === 'scatter' && w5o.fb.toast === true, JSON.stringify(w5o.fb));
-  check('W5 换型后空弹清理且装备新武器', w5o.cl.id === 'heavy' && w5o.cl.depletedGone === true && w5o.cl.invLen === 3, JSON.stringify(w5o.cl));
+  check('W5 普通材料补弹后仍装备稀有laser', w5o.restored.id === 'laser' && w5o.restored.q === 'rare' && w5o.restored.common === 1 && w5o.restored.ammo > 0, JSON.stringify(w5o.restored));
+  check('W5 切换heavy后仍保留稀有laser产权', w5o.switched.id === 'heavy' && w5o.switched.keepsRareLaser === true, JSON.stringify(w5o.switched));
+
+  const w6o = await r.eval(w6);
+  check('W6 稀有A取得普通A时不降级并累计材料', w6o.sameType.id === 'scatter' && w6o.sameType.q === 'rare' && w6o.sameType.common === 1, JSON.stringify(w6o.sameType));
+  check('W6 稀有A取得普通B时立即切换普通B', w6o.otherType.id === 'pierce' && w6o.otherType.q === 'common', JSON.stringify(w6o.otherType));
+  check('W6 切换B后仍保留稀有A产权', w6o.keepsRareA === true && w6o.bCopies === 1, JSON.stringify({ keepsRareA: w6o.keepsRareA, bCopies: w6o.bCopies }));
 
   check('R2 无 Runtime 异常', r.errors.length === 0, r.errors.join(' | '));
 } catch (e) { fatal = e; console.error('FATAL', e.stack || e); }

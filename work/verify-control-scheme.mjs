@@ -411,8 +411,10 @@ try {
     const r = await evalCheck('D12 设置行切换: 点击「操作方式」→ 切换纯键盘并写存档, 即时生效', `(() => {
       if (typeof controlSchemeAsk !== 'undefined') controlSchemeAsk = false;
       if (typeof controlSchemeChosen !== 'undefined') controlSchemeChosen = true;
+      input.isTouch = false;
       save.controlScheme = 'keyboard+mouse'; saveNow();
       setState('settings');
+      settingsScrollY = settingsMaxScroll();
       const R = controlSchemeRowLayout();
       handleSettingsPress(R.x + R.w / 2, R.y + R.h / 2);
       const s1 = save.controlScheme;

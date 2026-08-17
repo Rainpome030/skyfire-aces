@@ -33,7 +33,7 @@ function requestPause(source) {
   input.touch.throttleBarId = null;
   input.touch.swipeId = null;
   input.fireHeld = false; input.mslHeld = false;
-  input.mouse.down = false;
+  clearMouseButtonState();
   touchSwipe.active = false; touchSwipe.dir = null;
   lastTime = performance.now();   // 恢复首帧 dt 钳制(与 loop 的 min(0.05) 双保险)
   return true;
@@ -114,6 +114,7 @@ function buildMenuButtons(state) {
         saveKeybinds();
         save.sfxVolume = SFX_VOLUME_DEFAULT;
         save.engineVolume = ENGINE_VOLUME_DEFAULT;
+        save.cameraMode = CAMERA_HEADING_UP;
         if (!input.isTouch) {
           save.controlScheme = 'keyboard+mouse';
           controlSchemeChosen = true;
@@ -144,9 +145,10 @@ function settingsMetrics() {
   const rowH = touchPortrait ? 48 : 46;
   const volumeRowH = touchPortrait ? 44 : 38;
   const controlH = touchPortrait ? 44 : 38;
-  const contentH = SETTINGS_ACTIONS.length * rowH + 14 + volumeRowH * 2 + 16 + controlH + 18;
+  const cameraH = touchPortrait ? 44 : 38;
+  const contentH = SETTINGS_ACTIONS.length * rowH + 14 + volumeRowH * 2 + 16 + controlH + 8 + cameraH + 18;
   return { touchPortrait, rowW, rowX, rowH, volumeRowH, controlH, viewportTop, viewportBottom,
-    viewportH: viewportBottom - viewportTop, contentH };
+    cameraH, viewportH: viewportBottom - viewportTop, contentH };
 }
 
 function settingsMaxScroll() {
@@ -210,6 +212,19 @@ function controlSchemeRowAt(x, y) {
   return (x >= R.x && x <= R.x + R.w && y >= R.y && y <= R.y + R.h) ? true : false;
 }
 
+function cameraModeRowLayout() {
+  const L = settingsLayout();
+  const CR = controlSchemeRowLayout();
+  return { x: L.rowX, w: L.rowW, y: CR.y + CR.h + 8, h: L.cameraH };
+}
+
+function cameraModeRowAt(x, y) {
+  const L = settingsLayout();
+  if (y < L.viewportTop || y > L.viewportBottom) return false;
+  const R = cameraModeRowLayout();
+  return x >= R.x && x <= R.x + R.w && y >= R.y && y <= R.y + R.h;
+}
+
 function startBindCapture(action) {
   captureBind = action;
   AudioSys.click();
@@ -252,6 +267,12 @@ function handleSettingsPress(x, y) {
     AudioSys.click();
     return true;
   }
+  if (cameraModeRowAt(x, y)) {
+    save.cameraMode = save.cameraMode === CAMERA_WORLD_UP ? CAMERA_HEADING_UP : CAMERA_WORLD_UP;
+    saveNow();
+    AudioSys.click();
+    return true;
+  }
   return false;
 }
 
@@ -264,7 +285,7 @@ function drawSettings() {
   ctx.fillText(input.isTouch ? '设置' : '按键设置', W / 2, H * 0.065);
   ctx.fillStyle = '#aebecd';
   ctx.font = '500 ' + (input.isTouch ? 12 : Math.round(Math.min(13, W * 0.018))) + 'px "Microsoft YaHei", sans-serif';
-  ctx.fillText(input.isTouch ? 'PC 按键只读' : '点击动作后按下新按键；支持键盘、鼠标左/中/右键；Esc 取消本次修改', W / 2, H * 0.095);
+  ctx.fillText(input.isTouch ? 'PC 按键只读' : '点击动作后按下新按键；支持键盘、鼠标左/中/右键及侧键；Esc 取消本次修改', W / 2, H * 0.095);
   const L = settingsLayout();
   ctx.save();
   ctx.beginPath();
@@ -330,6 +351,31 @@ function drawSettings() {
   ctx.fillStyle = '#ffd166';
   ctx.fillText(save.controlScheme === 'keyboard-only' ? '纯键盘(鼠标仅界面点击)' : '键鼠(鼠标转向)', CR.x + CR.w - 18, CR.y + CR.h * 0.62);
   ctx.globalAlpha = 1;
+
+  const VR = cameraModeRowLayout();
+  ctx.fillStyle = 'rgba(14,32,52,0.85)';
+  ctx.strokeStyle = 'rgba(140,180,210,0.5)';
+  ctx.lineWidth = 1.2;
+  roundRect(VR.x, VR.y, VR.w, VR.h - 4, 7);
+  ctx.fill(); ctx.stroke();
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#dfe9f2';
+  ctx.font = '600 ' + (L.touchPortrait ? 13 : Math.round(Math.min(15, W * 0.02))) + 'px "Microsoft YaHei", sans-serif';
+  ctx.fillText('视角模式', VR.x + 18, VR.y + VR.h * 0.62);
+  const worldUp = save.cameraMode === CAMERA_WORLD_UP;
+  const switchW = 44, switchH = 22;
+  const switchX = VR.x + VR.w - 18 - switchW;
+  const switchY = VR.y + (VR.h - 4 - switchH) / 2;
+  ctx.textAlign = 'right';
+  ctx.fillStyle = worldUp ? '#9be3ff' : '#ffd166';
+  ctx.fillText(worldUp ? '地图朝上' : '战机朝上', switchX - 10, VR.y + VR.h * 0.62);
+  ctx.fillStyle = worldUp ? '#287aa8' : '#725d25';
+  roundRect(switchX, switchY, switchW, switchH, switchH / 2);
+  ctx.fill();
+  ctx.fillStyle = '#f5f8fa';
+  ctx.beginPath();
+  ctx.arc(switchX + (worldUp ? switchW - switchH / 2 : switchH / 2), switchY + switchH / 2, 8, 0, TAU);
+  ctx.fill();
   ctx.restore();
 
   const maxScroll = settingsMaxScroll();

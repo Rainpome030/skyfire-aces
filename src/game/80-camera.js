@@ -1,6 +1,10 @@
 // ---------- camera ----------
+function cameraViewAngle() {
+  return save && save.cameraMode === CAMERA_WORLD_UP ? 0 : -Math.PI / 2 - player.heading;
+}
+
 function updateCamera(dt) {
-  // 追尾视角(任务书 20):相机硬锁玩家(旋转中心=飞机位置,否则飞机在屏幕上画圈)
+  // 相机始终锁定玩家位置；视角设置只决定是否跟随玩家航向旋转。
   cam.x = player.x; cam.y = player.y;
   cam.zoom = lerp(cam.zoom, CAM_ZOOM, dt * 2);
   cam.shake = Math.max(0, cam.shake - dt * 34);

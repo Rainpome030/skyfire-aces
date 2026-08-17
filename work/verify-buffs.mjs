@@ -132,22 +132,23 @@ const T = `
   hurtPlayer(40);
   out.shieldAfterHit2 = { hp: player.hp, n: player.buffs.shield ? player.buffs.shield.n : 0, gone: !player.buffs.shield };
 
-  // 6) 升级三选一 = 武器
+  // 6) 等级提升三选一 = 本局永久 Buff
   player.buffs = {};
-  GAME.upgrades = {}; GAME.weapons = []; GAME.dash = null; GAME.synth = {};
+  GAME.upgrades = {}; GAME.weapons = []; GAME.weaponCopies = {}; GAME.pendingBuffChoices = 0; GAME.dash = null; GAME.synth = {};
   player.weapon = defaultWeapon(); player.hp = player.maxHp = 100;
   GAME.level = 1; GAME.exp = 0;
   upgradeChoice = null;
   addExp(200);  // 足够升 1 级
   out.choice = !!upgradeChoice;
-  out.choiceOptions = upgradeChoice ? upgradeChoice.options.map(o => o.id + ':' + o.quality) : [];
+  out.choiceKind = upgradeChoice && upgradeChoice.kind;
+  out.choiceOptions = upgradeChoice ? upgradeChoice.options.map(o => o.id) : [];
 
-  // 7) 选武器后 applyWeapon 生效
+  // 7) 选择后永久 Buff 层数增加并关闭面板
   if (upgradeChoice) {
     const o = upgradeChoice.options[0];
-    const had = GAME.weapons.length;
+    const before = GAME.upgrades[o.id] || 0;
     applyUpgrade(o);
-    out.afterApply = { weapons: GAME.weapons.length, had, playerW: player.weapon.id, choiceClosed: !upgradeChoice };
+    out.afterApply = { id: o.id, before, after: GAME.upgrades[o.id] || 0, playerW: player.weapon.id, choiceClosed: !upgradeChoice };
   }
 
   // 8) buff 计时到期移除
@@ -173,8 +174,8 @@ try {
   check('火力buff子弹伤害提升', out.gunDmgBuffed > out.gunDmgBase, { before: out.gunDmgBase, after: out.gunDmgBuffed });
   check('护盾挡第1击不掉血', out.shieldAfterHit1.hp === 100 && out.shieldAfterHit1.n === 1, out.shieldAfterHit1);
   check('护盾挡第2击后破碎', out.shieldAfterHit2.hp === 100 && out.shieldAfterHit2.gone, out.shieldAfterHit2);
-  check('升级面板打开且为武器', out.choice && out.choiceOptions.every(s => ['scatter','heavy','pierce','laser','rocket','plasma'].includes(s.split(':')[0])), out.choiceOptions);
-  check('选择武器后获得并关闭面板', out.afterApply && out.afterApply.choiceClosed && out.afterApply.weapons > out.afterApply.had, out.afterApply);
+  check('升级面板打开且为永久Buff', out.choice && out.choiceKind === 'buff' && out.choiceOptions.length === 3, out.choiceOptions);
+  check('选择Buff后层数+1并关闭面板', out.afterApply && out.afterApply.choiceClosed && out.afterApply.after === out.afterApply.before + 1 && out.afterApply.playerW === 'default', out.afterApply);
   check('buff 计时到期自动移除', out.buffExpired, true);
 } catch (e) {
   errors.push(String(e));

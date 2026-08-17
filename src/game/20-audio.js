@@ -592,6 +592,8 @@ var MusicSys = (function () {
 
 
 const SAVE_KEY = 'skyfire_save_v1';
+const CAMERA_HEADING_UP = 'heading-up';
+const CAMERA_WORLD_UP = 'world-up';
 const PLANE_DEFS = {
   gale:    { id: 'gale',    name: '疾风', tag: '均衡', desc: '攻守平衡的标准机体', hpMult: 1.0,  gunDmgMult: 1.0,  fireRateMult: 1.0, turnMult: 1.0,  accelMult: 1.0,  missileBonus: 0,   unlock: null },
   hammer:  { id: 'hammer',  name: '重锤', tag: '重装', desc: '血量+50% 机炮+25% 机动-20% 导弹+16', hpMult: 1.5, gunDmgMult: 1.25, fireRateMult: 1.0, turnMult: 0.8,  accelMult: 0.8,  missileBonus: 16,  unlock: null },
@@ -608,7 +610,7 @@ function defaultSave() {
            difficulty: 'normal', bestScore: {}, bestRank: {}, achievements: [], bestKills: 0,
            totalKills: 0, totalScore: 0, missionsCleared: 0,
            sfxVolume: SFX_VOLUME_DEFAULT, engineVolume: ENGINE_VOLUME_DEFAULT,
-           controlScheme: 'keyboard+mouse' };
+           controlScheme: 'keyboard+mouse', cameraMode: CAMERA_HEADING_UP };
 }
 
 let controlSchemeChosen = false;   // P36: 是否曾明确选择操作方式(原始存档含该字段 或 本次会话已选择)
@@ -629,6 +631,7 @@ function loadSave() {
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid save data');
     save = Object.assign(fallback, parsed);
     if (typeof save.controlScheme !== 'string' || (save.controlScheme !== 'keyboard+mouse' && save.controlScheme !== 'keyboard-only')) save.controlScheme = 'keyboard+mouse';   // P36: 旧档无字段默认键鼠, 不报错
+    if (save.cameraMode !== CAMERA_HEADING_UP && save.cameraMode !== CAMERA_WORLD_UP) save.cameraMode = CAMERA_HEADING_UP;
     controlSchemeChosen = !!(typeof parsed.controlScheme === 'string' && (parsed.controlScheme === 'keyboard+mouse' || parsed.controlScheme === 'keyboard-only'));   // P36: 原始存档已含该字段 = 已选择过, 不再询问
     if (!save.bestScore || typeof save.bestScore !== 'object' || Array.isArray(save.bestScore)) save.bestScore = {};
     if (!save.bestRank || typeof save.bestRank !== 'object' || Array.isArray(save.bestRank)) save.bestRank = {};
