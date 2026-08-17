@@ -1,0 +1,14 @@
+# Local browser state and generated diagnostics
+work/chrome-profile*/
+work/_*
+work/*.diff
+work/release-*-logs/
+work/baseline-*-logs/
+.orchestra/
+
+# Local snapshots and backups
+outputs/备份/
+备份/
+
+# Generated visual artifacts
+*.png
