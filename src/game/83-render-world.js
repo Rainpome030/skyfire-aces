@@ -82,9 +82,9 @@ function drawWorld() {
   drawWater(world.theme);
   drawSun();
   ctx.save();
-  // 追尾视角:飞机锁在屏幕 (W/2, H*0.62),机头朝上(世界旋转 -π/2 - heading)(任务书 20)
+  // 战机固定在屏幕锚点；视角可在战机朝上与地图朝上之间切换。
   ctx.translate(W / 2, H * CAM_ANCHOR_Y);
-  ctx.rotate(-Math.PI / 2 - player.heading);
+  ctx.rotate(cameraViewAngle());
   ctx.scale(cam.zoom, cam.zoom);
   ctx.translate(-cam.x + cam.shakeX, -cam.y + cam.shakeY);
   drawIslands();

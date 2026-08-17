@@ -507,14 +507,14 @@ function updateEyeBoss(e, dt) {
 
   // ---- 阶段切换 ----
   // 血线 66% → 阶段2:入场台词 + 冲击波
-  if (e.phase === 1 && e.hp < e.maxHp * 0.66) {
+  if (!e.eliteMinion && e.phase === 1 && e.hp < e.maxHp * 0.66) {
     e.phase = 2;
     addToast('深渊之眼:引擎过载——展开歼灭弹幕!', '#ffffff', 18);
     addRing(e.x, e.y, 180, 'rgba(124,92,255,0.9)', 0.9);
     addFlash(e.x, e.y, 130, 'rgba(160,130,255,0.8)', 0.3);
   }
   // 血线 33% → 阶段3(狂暴):受击加深 ×1.5、速度提到 110、弹幕/俯冲间隔减半
-  if (e.phase === 2 && e.hp < e.maxHp * 0.33) {
+  if (!e.eliteMinion && e.phase === 2 && e.hp < e.maxHp * 0.33) {
     e.phase = 3;
     e.takeDmgMult = 1.5; // 总控在 damagePlane 前乘此字段实现受击加深(见文件头注释)
     e.maxSpeed = 110;
@@ -569,7 +569,7 @@ function updateEyeBoss(e, dt) {
 
   // ---- 召唤无人机(每 9s 2 架;软上限:场上存活 ≤ 4,防止无限堆积)----
   e.droneCd -= dt;
-  if (e.droneCd <= 0) {
+  if (!e.eliteMinion && e.droneCd <= 0) {
     e.droneCd = 9;
     let aliveDrones = 0;
     for (const x of enemies) if (x.kind === 'drone' && !x.dead) aliveDrones++;
@@ -742,14 +742,14 @@ function updateKingBoss(e, dt) {
 
   // ---- 阶段切换 ----
   // 血线 60% → 阶段2:召唤僚机 + 自身弹幕强化
-  if (e.phase === 1 && e.hp < e.maxHp * 0.6) {
+  if (!e.eliteMinion && e.phase === 1 && e.hp < e.maxHp * 0.6) {
     e.phase = 2;
     addToast('终焉之王:僚机!绞杀它!', '#ffffff', 18);
     addRing(e.x, e.y, 130, 'rgba(255,94,94,0.9)', 0.8);
     addFlash(e.x, e.y, 90, 'rgba(255,140,120,0.8)', 0.3);
   }
   // 血线 30% → 阶段3(残血狂暴):超高速突袭模式
-  if (e.phase === 2 && e.hp < e.maxHp * 0.3) {
+  if (!e.eliteMinion && e.phase === 2 && e.hp < e.maxHp * 0.3) {
     e.phase = 3;
     e.maxSpeed = 420;
     addToast('终焉之王:最后一击!', '#ff6b6b', 18);

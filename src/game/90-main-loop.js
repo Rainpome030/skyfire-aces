@@ -18,7 +18,6 @@ function update(dt) {
       updatePlayer(dt);
       updateBuffs(dt);
       acquireLock(dt);
-      updateMissionSpawn(dt);
       for (const e of enemies) if (!e.dead) updateEnemy(e, dt);
       for (const a of allies) {
         if (!a || a.kind !== 'wingman' || a.dead) continue;

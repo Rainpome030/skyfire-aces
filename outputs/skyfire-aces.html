@@ -137,7 +137,7 @@ function seeded(seed) {
 // ---------- input ----------
 const input = {
   keys: {},
-  mouse: { x: 0, y: 0, down: false, rdown: false, mid: false, movedAt: -99 },
+  mouse: { x: 0, y: 0, down: false, rdown: false, mid: false, buttons: {}, movedAt: -99 },
   touch: { active: false, mslId: null, mslStartX: 0, mslStartY: 0, dashId: null, swipeId: null, throttleBarId: null, pauseId: null },
   fireHeld: false,
   mslHeld: false,
@@ -214,10 +214,39 @@ function codeFromEvent(e) {
   return e.code || (e.key ? e.key.toUpperCase() : '');
 }
 
+const MOUSE_BUTTON_LABELS = ['左键', '中键', '右键', '侧键1', '侧键2'];
+
+function mouseCodeFromButton(button) {
+  return Number.isInteger(button) && button >= 0 && button < MOUSE_BUTTON_LABELS.length ? 'mouse' + button : '';
+}
+
+function mouseButtonFromCode(code) {
+  const match = /^mouse(\d+)$/.exec(code || '');
+  if (!match) return -1;
+  const button = Number(match[1]);
+  return button >= 0 && button < MOUSE_BUTTON_LABELS.length ? button : -1;
+}
+
+function setMouseButtonState(button, down) {
+  if (!mouseCodeFromButton(button)) return false;
+  input.mouse.buttons = input.mouse.buttons || {};
+  input.mouse.buttons[button] = !!down;
+  if (button === 0) input.mouse.down = !!down;
+  if (button === 1) input.mouse.mid = !!down;
+  if (button === 2) input.mouse.rdown = !!down;
+  return true;
+}
+
+function clearMouseButtonState() {
+  input.mouse.down = false;
+  input.mouse.mid = false;
+  input.mouse.rdown = false;
+  input.mouse.buttons = {};
+}
+
 function prettyKey(code) {
-  if (code === 'mouse0') return '左键';
-  if (code === 'mouse1') return '中键';
-  if (code === 'mouse2') return '右键';
+  const mouseButton = mouseButtonFromCode(code);
+  if (mouseButton >= 0) return MOUSE_BUTTON_LABELS[mouseButton];
   if (!code) return '未设置';
   const map = {
     KeyW: 'W', KeyA: 'A', KeyS: 'S', KeyD: 'D', KeyE: 'E', KeyP: 'P', KeyM: 'M',
@@ -233,9 +262,11 @@ function prettyKey(code) {
 
 function isActionDown(action) {
   const code = bindFor(action);
-  if (code === 'mouse0') return input.mouse.down;
-  if (code === 'mouse1') return input.mouse.mid;
-  if (code === 'mouse2') return input.mouse.rdown;
+  const mouseButton = mouseButtonFromCode(code);
+  if (mouseButton === 0) return input.mouse.down;
+  if (mouseButton === 1) return input.mouse.mid;
+  if (mouseButton === 2) return input.mouse.rdown;
+  if (mouseButton >= 3) return !!input.mouse.buttons[mouseButton];
   return !!input.keys[code];
 }
 
@@ -408,31 +439,25 @@ canvas.addEventListener('mousemove', (e) => {
 canvas.addEventListener('mousedown', (e) => {
   AudioSys.init(); AudioSys.resume();
   const p = screenPosFromEvent(e);
+  const mouseCode = mouseCodeFromButton(e.button);
+  if (mouseCode) e.preventDefault();
   input.mouse.x = p.x; input.mouse.y = p.y; input.mouse.movedAt = performance.now() / 1000;
-  if (captureBind && GAME.state === 'settings') {
-    if (settingsRowAt(p.x, p.y)) {
-      startBindCapture(settingsRowAt(p.x, p.y).action);
-      return;
-    }
-    if (e.button === 0 || e.button === 1 || e.button === 2) {
-      completeBindCapture('mouse' + e.button);
-      return;
-    }
+  if (captureBind && GAME.state === 'settings' && mouseCode) {
+    completeBindCapture(mouseCode);
+    return;
   }
   const consumed = handleCanvasPress(p.x, p.y);
-  if (!consumed) {
-    if (e.button === 0) input.mouse.down = true;
-    if (e.button === 1) input.mouse.mid = true;
-    if (e.button === 2) input.mouse.rdown = true;
+  if (!consumed && mouseCode) {
+    setMouseButtonState(e.button, true);
+    handleBoundPress(mouseCode, false, 'mouse');
   }
 });
 window.addEventListener('mouseup', (e) => {
-  if (e.button === 0) input.mouse.down = false;
-  if (e.button === 1) input.mouse.mid = false;
-  if (e.button === 2) input.mouse.rdown = false;
+  setMouseButtonState(e.button, false);
   input.fireHeld = false; input.mslHeld = false;
 });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+canvas.addEventListener('auxclick', (e) => e.preventDefault());
 
 canvas.addEventListener('touchstart', (e) => {
   e.preventDefault();
@@ -573,6 +598,32 @@ canvas.addEventListener('wheel', (e) => {
 
 function inRect(x, y, r) { return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h; }
 
+function handleBoundPress(code, repeat, source) {
+  if (isBound(code, 'mute') && !repeat) {
+    AudioSys.toggleMute();
+    if (typeof MusicSys !== 'undefined' && MusicSys.toggleMute) MusicSys.toggleMute();
+  }
+  const menuHit = isBound(code, 'menu');
+  const pauseHit = isBound(code, 'pause');
+  if (menuHit && !repeat && GAME.state === 'playing' && upgradeChoice) {
+    skipUpgradeChoice();
+  } else if ((pauseHit || menuHit) && !repeat) {
+    if (GAME.state === 'playing') requestPause(source);
+    else if (GAME.state === 'paused') requestResume();
+  }
+  if (isBound(code, 'confirm') && !repeat) handleConfirmKey();
+  if (!repeat && GAME.state === 'playing' && (isBound(code, 'turnLeft') || isBound(code, 'turnRight'))) {
+    const now = performance.now() / 1000;
+    const dir = isBound(code, 'turnLeft') ? 'left' : 'right';
+    if (player.lastDirTap && player.lastDirTap.dir === dir && now - player.lastDirTap.t < KEY_TAP_DOUBLE_GAP) {
+      tryBarrelRoll(dir);
+      player.lastDirTap = { dir: null, t: -99 };
+    } else {
+      player.lastDirTap = { dir, t: now };
+    }
+  }
+}
+
 window.addEventListener('keydown', (e) => {
   AudioSys.init(); AudioSys.resume();
   const code = codeFromEvent(e);
@@ -616,29 +667,7 @@ window.addEventListener('keydown', (e) => {
   input.keys[code] = true;
   input.keys[e.key.toLowerCase()] = true;
   if (code === 'Space') e.preventDefault();
-  if (isBound(code, 'mute') && !e.repeat) { AudioSys.toggleMute(); if (typeof MusicSys !== 'undefined' && MusicSys.toggleMute) MusicSys.toggleMute(); }
-  const menuHit = isBound(code, 'menu');
-  const pauseHit = isBound(code, 'pause');
-  if (menuHit && !e.repeat && GAME.state === 'playing' && upgradeChoice) {
-    skipUpgradeChoice();
-  } else if ((pauseHit || menuHit) && !e.repeat) {
-    if (GAME.state === 'playing') requestPause('keyboard');
-    else if (GAME.state === 'paused') requestResume();
-  }
-  if (isBound(code, 'confirm') && !e.repeat) handleConfirmKey();
-  if (!e.repeat && GAME.state === 'playing') {
-    // 双击 A/D 滚筒(任务书 21):同向两次点击(间隔 < KEY_TAP_DOUBLE_GAP)→ 滚筒;替换原 rollLeft/rollRight 按键直发
-    if (isBound(code, 'turnLeft') || isBound(code, 'turnRight')) {
-      const now = performance.now() / 1000;
-      const dir = isBound(code, 'turnLeft') ? 'left' : 'right';
-      if (player.lastDirTap && player.lastDirTap.dir === dir && now - player.lastDirTap.t < KEY_TAP_DOUBLE_GAP) {
-        tryBarrelRoll(dir);
-        player.lastDirTap = { dir: null, t: -99 }; // 防三连
-      } else {
-        player.lastDirTap = { dir, t: now };
-      }
-    }
-  }
+  handleBoundPress(code, e.repeat, 'keyboard');
 });
 window.addEventListener('keyup', (e) => {
   const code = codeFromEvent(e);
@@ -1244,6 +1273,8 @@ var MusicSys = (function () {
 
 
 const SAVE_KEY = 'skyfire_save_v1';
+const CAMERA_HEADING_UP = 'heading-up';
+const CAMERA_WORLD_UP = 'world-up';
 const PLANE_DEFS = {
   gale:    { id: 'gale',    name: '疾风', tag: '均衡', desc: '攻守平衡的标准机体', hpMult: 1.0,  gunDmgMult: 1.0,  fireRateMult: 1.0, turnMult: 1.0,  accelMult: 1.0,  missileBonus: 0,   unlock: null },
   hammer:  { id: 'hammer',  name: '重锤', tag: '重装', desc: '血量+50% 机炮+25% 机动-20% 导弹+16', hpMult: 1.5, gunDmgMult: 1.25, fireRateMult: 1.0, turnMult: 0.8,  accelMult: 0.8,  missileBonus: 16,  unlock: null },
@@ -1260,7 +1291,7 @@ function defaultSave() {
            difficulty: 'normal', bestScore: {}, bestRank: {}, achievements: [], bestKills: 0,
            totalKills: 0, totalScore: 0, missionsCleared: 0,
            sfxVolume: SFX_VOLUME_DEFAULT, engineVolume: ENGINE_VOLUME_DEFAULT,
-           controlScheme: 'keyboard+mouse' };
+           controlScheme: 'keyboard+mouse', cameraMode: CAMERA_HEADING_UP };
 }
 
 let controlSchemeChosen = false;   // P36: 是否曾明确选择操作方式(原始存档含该字段 或 本次会话已选择)
@@ -1281,6 +1312,7 @@ function loadSave() {
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid save data');
     save = Object.assign(fallback, parsed);
     if (typeof save.controlScheme !== 'string' || (save.controlScheme !== 'keyboard+mouse' && save.controlScheme !== 'keyboard-only')) save.controlScheme = 'keyboard+mouse';   // P36: 旧档无字段默认键鼠, 不报错
+    if (save.cameraMode !== CAMERA_HEADING_UP && save.cameraMode !== CAMERA_WORLD_UP) save.cameraMode = CAMERA_HEADING_UP;
     controlSchemeChosen = !!(typeof parsed.controlScheme === 'string' && (parsed.controlScheme === 'keyboard+mouse' || parsed.controlScheme === 'keyboard-only'));   // P36: 原始存档已含该字段 = 已选择过, 不再询问
     if (!save.bestScore || typeof save.bestScore !== 'object' || Array.isArray(save.bestScore)) save.bestScore = {};
     if (!save.bestRank || typeof save.bestRank !== 'object' || Array.isArray(save.bestRank)) save.bestRank = {};
@@ -1385,6 +1417,8 @@ const GAME = {
   comboMax: 5,
   upgrades: {},
   weapons: [],
+  weaponCopies: {},
+  pendingBuffChoices: 0,
   dash: null,
   pickupsTaken: 0,
   reviveCount: 0,
@@ -2047,14 +2081,14 @@ function updateEyeBoss(e, dt) {
 
   // ---- 阶段切换 ----
   // 血线 66% → 阶段2:入场台词 + 冲击波
-  if (e.phase === 1 && e.hp < e.maxHp * 0.66) {
+  if (!e.eliteMinion && e.phase === 1 && e.hp < e.maxHp * 0.66) {
     e.phase = 2;
     addToast('深渊之眼:引擎过载——展开歼灭弹幕!', '#ffffff', 18);
     addRing(e.x, e.y, 180, 'rgba(124,92,255,0.9)', 0.9);
     addFlash(e.x, e.y, 130, 'rgba(160,130,255,0.8)', 0.3);
   }
   // 血线 33% → 阶段3(狂暴):受击加深 ×1.5、速度提到 110、弹幕/俯冲间隔减半
-  if (e.phase === 2 && e.hp < e.maxHp * 0.33) {
+  if (!e.eliteMinion && e.phase === 2 && e.hp < e.maxHp * 0.33) {
     e.phase = 3;
     e.takeDmgMult = 1.5; // 总控在 damagePlane 前乘此字段实现受击加深(见文件头注释)
     e.maxSpeed = 110;
@@ -2109,7 +2143,7 @@ function updateEyeBoss(e, dt) {
 
   // ---- 召唤无人机(每 9s 2 架;软上限:场上存活 ≤ 4,防止无限堆积)----
   e.droneCd -= dt;
-  if (e.droneCd <= 0) {
+  if (!e.eliteMinion && e.droneCd <= 0) {
     e.droneCd = 9;
     let aliveDrones = 0;
     for (const x of enemies) if (x.kind === 'drone' && !x.dead) aliveDrones++;
@@ -2282,14 +2316,14 @@ function updateKingBoss(e, dt) {
 
   // ---- 阶段切换 ----
   // 血线 60% → 阶段2:召唤僚机 + 自身弹幕强化
-  if (e.phase === 1 && e.hp < e.maxHp * 0.6) {
+  if (!e.eliteMinion && e.phase === 1 && e.hp < e.maxHp * 0.6) {
     e.phase = 2;
     addToast('终焉之王:僚机!绞杀它!', '#ffffff', 18);
     addRing(e.x, e.y, 130, 'rgba(255,94,94,0.9)', 0.8);
     addFlash(e.x, e.y, 90, 'rgba(255,140,120,0.8)', 0.3);
   }
   // 血线 30% → 阶段3(残血狂暴):超高速突袭模式
-  if (e.phase === 2 && e.hp < e.maxHp * 0.3) {
+  if (!e.eliteMinion && e.phase === 2 && e.hp < e.maxHp * 0.3) {
     e.phase = 3;
     e.maxSpeed = 420;
     addToast('终焉之王:最后一击!', '#ff6b6b', 18);
@@ -2852,7 +2886,7 @@ function killPlane(p) {
     addExp(gained);
     registerKillCombo();
   }
-  if (p.kind === 'ace' || p.kind === 'eye' || p.kind === 'king') mission.bossKilled = true;
+  if (mission && (p === mission.boss || p.isWaveBoss)) mission.bossKilled = true;
   grantAchievements();
   if (Math.random() < 0.32) {
     pickups.push({
@@ -2865,7 +2899,7 @@ function killPlane(p) {
 }
 
 function expMultiplier() {
-  return 1 + GAME.combo * 0.2;
+  return (1 + GAME.combo * 0.2) * (1 + (GAME.upgrades.expGain || 0) * 0.15);
 }
 
 function comboCountdown() {
@@ -2889,7 +2923,7 @@ function registerKillCombo() {
 function addExp(amount) {
   GAME.exp += amount;
   addText(player.x, player.y - 40, '+' + amount + ' EXP', '#9be3ff', 14);
-  let leveled = false;
+  let levelsGained = 0;
   while (GAME.level < 300 && GAME.exp >= expNeeded(GAME.level)) {
     GAME.exp -= expNeeded(GAME.level);
     GAME.level++;
@@ -2897,10 +2931,13 @@ function addExp(amount) {
     player.hp = Math.min(player.maxHp, player.hp + heal);
     addText(player.x, player.y - 76, '升级 Lv.' + GAME.level + ' 修复 +' + heal, '#7ee787', 17);
     AudioSys.pickup();
-    leveled = true;
+    levelsGained++;
   }
   if (GAME.level >= 300) GAME.exp = 0;
-  if (leveled) showUpgradeChoice();
+  if (levelsGained > 0) {
+    GAME.pendingBuffChoices = (GAME.pendingBuffChoices || 0) + levelsGained;
+    showUpgradeChoice();
+  }
 }
 
 function expNeeded(level) {
@@ -2934,7 +2971,8 @@ function hurtPlayer(dmg) {
     cam.shake = Math.min(10, cam.shake + 3);
     return;
   }
-  const mitigated = dmg;
+  const armor = Math.min(0.5, (GAME.upgrades.armor || 0) * 0.05);
+  const mitigated = dmg * (1 - armor);
   damagePlane(player, mitigated);
   player.hitFlash = Math.max(player.hitFlash, 0.3);
   cam.shake = Math.min(24, cam.shake + 8);
@@ -3320,7 +3358,8 @@ function updatePlayer(dt) {
     tryDash();
   }
   if (!isActionDown('dash')) player.dashPressed = false;
-  const targetSpeed = CFG.minSpeed + player.throttle * (CFG.maxSpeed - CFG.minSpeed) + (player.afterburn ? CFG.abSpeed : 0);
+  const runSpeedMult = 1 + (GAME.upgrades.moveSpeed || 0) * 0.08;
+  const targetSpeed = (CFG.minSpeed + player.throttle * (CFG.maxSpeed - CFG.minSpeed) + (player.afterburn ? CFG.abSpeed : 0)) * runSpeedMult;
   player.speed = lerp(player.speed, targetSpeed, 1 - Math.exp(-dt * (player.afterburn ? 2.2 : 1.4) * player.accelMult));
   movePlane(player, dt);
 
@@ -3373,7 +3412,7 @@ function updatePlayer(dt) {
   // speedRatio = player.speed / CFG.maxSpeed(370);rate = (speedRatio - 0.5) * 1600 高度/秒
   // ratio=0.27(怠速95)→ 约 -389/s,ratio=0.5(185)→ 0,ratio=1(370)→ +800/s,ratio=1.3(加力480)→ +1276/s
   // 系数 1600 可调(任务书 19:原 160 ×10);高度为 0 → 直接死亡(走 killPlane 现有流程)
-  const speedRatio = player.speed / CFG.maxSpeed;
+  const speedRatio = player.speed / (CFG.maxSpeed * runSpeedMult);
   player.altitude = Math.max(0, Math.min(9000, player.altitude + (speedRatio - 0.5) * 1600 * dt));
   if (player.altitude <= 0) { killPlane(player); return; }
   // 复活动画推进:动画结束后才开始 3 秒无敌计时(动画期间 invuln=1.2 已保证无敌)
@@ -3421,20 +3460,23 @@ function firePlayerGuns() {
   if (player.fireCd > 0 || !player.alive) return;
   const w = player.weapon;
   if (!w || w.ammo === 0) return;
-  player.fireCd = w.cd / (1 + (player.buffs.rate ? 0.5 : 0)) / player.fireRateMult;
+  const runRateMult = 1 + (GAME.upgrades.gunRate || 0) * 0.12;
+  player.fireCd = w.cd / (1 + (player.buffs.rate ? 0.5 : 0)) / player.fireRateMult / runRateMult;
   player.gunSide = -player.gunSide;
   const ox = Math.cos(player.heading), oy = Math.sin(player.heading);
   const px = -oy, py = ox;
-  const count = Math.max(1, Math.round(w.barrel || 2));
+  const count = Math.min(8, Math.max(1, Math.round(w.barrel || 2) + (GAME.upgrades.projectiles || 0)));
   const offs = [];
   if (count === 1) offs.push(0);
   else if (count === 2) offs.push(-8, 8);
   else if (count === 3) offs.push(-13, 0, 13);
   else if (count === 4) offs.push(-16, -6, 6, 16);
+  else for (let i = 0; i < count; i++) offs.push((i - (count - 1) / 2) * 9);
   for (const side of offs) {
     const spread = rand(-w.spread, w.spread);
     const a = player.heading + spread;
-    const dmgMult = (1 + (player.buffs.damage ? 0.6 : 0)) * player.gunDmgMult;
+    const dmgMult = (1 + (player.buffs.damage ? 0.6 : 0)) * player.gunDmgMult *
+      (1 + (GAME.upgrades.gunDamage || 0) * 0.15);
     bullets.push({
       x: player.x + ox * 36 + px * side,
       y: player.y + oy * 36 + py * side,
@@ -3452,10 +3494,9 @@ function firePlayerGuns() {
 
 function switchWeaponBack() {
   const list = GAME.weapons;
-  while (list.length > 1) {
-    list.pop();
-    const prev = list[list.length - 1];
-    if (prev && (!prev.limited || prev.ammo > 0)) {
+  for (let i = list.length - 1; i >= 0; i--) {
+    const prev = list[i];
+    if (prev !== player.weapon && prev && (!prev.limited || prev.ammo > 0)) {
       player.weapon = prev;
       addToast(prev.name + ' 已接替', QUALITY_COLOR[prev.quality], 15);
       return;
@@ -3744,7 +3785,7 @@ function updateEnemy(e, dt) {
       });
     }
   }
-  if (e.kind === 'ace' && !e.phase2 && e.hp < e.maxHp * 0.4) {
+  if (e.kind === 'ace' && !e.eliteMinion && !e.phase2 && e.hp < e.maxHp * 0.4) {
     e.phase2 = true;
     addRing(e.x, e.y, 140, 'rgba(255,80,60,0.9)', 0.8);
     addText(e.x, e.y - 40, '绯红彗星 进入第二阶段', '#ff8a80', 17);
@@ -3931,8 +3972,11 @@ function defaultWeapon() {
 
 function pickQuality() {
   const r = Math.random();
-  if (r < 0.62) return 'common';
-  if (r < 0.9) return 'good';
+  const luck = Math.max(0, GAME.upgrades.luck || 0);
+  const commonCutoff = Math.max(0.3, 0.62 - luck * 0.04);
+  const goodCutoff = Math.max(commonCutoff + 0.2, 0.9 - luck * 0.015);
+  if (r < commonCutoff) return 'common';
+  if (r < goodCutoff) return 'good';
   return 'rare';
 }
 
@@ -4036,104 +4080,95 @@ function updateBuffs(dt) {
   }
 }
 
-// [P30] 主动换型：立即装备本次选择的新武器对象；历史同 ID 对象保留供合成/回退，不做 count 合并
-function equipIncomingWeapon(id, quality) {
-  const def = DROP_WEAPONS[id];
-  const w = makeWeapon(id, quality);
-  if (w.limited) {
-    GAME.weapons = GAME.weapons.filter(x => !x.limited || x.ammo > 0);
-    GAME.weapons.push(w);
-    player.weapon = w;
-    addToast('已切换为 ' + w.name + '（弹药 ×' + w.ammo + '）', QUALITY_COLOR[quality], 16);
-    AudioSys.pickup();
-    return;
+function weaponCopyBucket(id) {
+  GAME.weaponCopies = GAME.weaponCopies || {};
+  let bucket = GAME.weaponCopies[id];
+  if (!bucket) {
+    bucket = { common: 0, good: 0, rare: 0 };
+    for (const w of GAME.weapons) {
+      if (w.id === id && QUALITY_ORDER.includes(w.quality)) {
+        bucket[w.quality] += Math.max(1, Math.round(w.count || 1));
+      }
+    }
+    GAME.weaponCopies[id] = bucket;
   }
-  if (!w.limited) w.count = 1;
-  GAME.weapons = GAME.weapons.filter(x => !x.limited || x.ammo > 0);
-  GAME.weapons.push(w);
-  player.weapon = w;
-  addToast('已切换为 ' + QUALITY_NAME[quality] + ' ' + w.name, QUALITY_COLOR[quality], 16);
-  AudioSys.pickup();
+  return bucket;
+}
+
+function syncWeaponSynth(id) {
+  GAME.synth = GAME.synth || {};
+  const bucket = weaponCopyBucket(id);
+  for (const q of QUALITY_ORDER) GAME.synth[id + ':' + q] = bucket[q] || 0;
+}
+
+function bestOwnedWeaponQuality(id) {
+  const bucket = weaponCopyBucket(id);
+  for (let i = QUALITY_ORDER.length - 1; i >= 0; i--) {
+    if ((bucket[QUALITY_ORDER[i]] || 0) > 0) return QUALITY_ORDER[i];
+  }
+  return null;
+}
+
+function weaponCopyProgress(id, quality) {
+  return weaponCopyBucket(id)[quality] || 0;
+}
+
+function addWeaponCopy(id, quality) {
+  const bucket = weaponCopyBucket(id);
+  const merges = [];
+  bucket[quality] = (bucket[quality] || 0) + 1;
+  for (let i = 0; i < QUALITY_ORDER.length - 1; i++) {
+    const from = QUALITY_ORDER[i];
+    const to = QUALITY_ORDER[i + 1];
+    while (bucket[from] >= 3) {
+      bucket[from] -= 3;
+      bucket[to] = (bucket[to] || 0) + 1;
+      merges.push({ from, to });
+    }
+  }
+  syncWeaponSynth(id);
+  return { bucket, merges, bestQuality: bestOwnedWeaponQuality(id) };
+}
+
+function equipBestOwnedWeapon(id, bestQuality, ammoGrant) {
+  const sameId = GAME.weapons.filter(w => w.id === id);
+  const previous = sameId.sort((a, b) => QUALITY_ORDER.indexOf(b.quality) - QUALITY_ORDER.indexOf(a.quality))[0] || null;
+  let weapon = previous && previous.quality === bestQuality ? previous : makeWeapon(id, bestQuality);
+  const wasCreated = !previous;
+  if (weapon !== previous && weapon.limited && previous && Number.isFinite(previous.ammo)) {
+    weapon.ammo = Math.max(0, previous.ammo);
+  }
+  if (weapon.limited && !wasCreated) weapon.ammo = Math.min(999, Math.max(0, weapon.ammo) + ammoGrant);
+  weapon.count = weaponCopyProgress(id, bestQuality);
+  GAME.weapons = GAME.weapons.filter(w => w.id !== id);
+  GAME.weapons.push(weapon);
+  player.weapon = weapon;
+  return weapon;
 }
 
 function applyWeapon(id, quality) {
-  if (id === 'default') return;
-  // [P30] 主动换型：任何历史同 ID 品质/合成判断之前先处理不同 ID 的立即装备
-  const switchingType = player.weapon && player.weapon.id !== id;
-  if (switchingType) {
-    return equipIncomingWeapon(id, quality); // 立即装备本次选择
-  }
+  if (id === 'default' || !DROP_WEAPONS[id] || !QUALITY_ORDER.includes(quality)) return;
+  // A new type is equipped immediately; repeat copies of one type never lower its equipped quality.
   const def = DROP_WEAPONS[id];
-  const qIdx = QUALITY_ORDER.indexOf(quality);
-  const sameId = GAME.weapons.filter(w => w.id === id && (!w.limited || w.ammo > 0));
-  let best = null, bestIdx = -1;
-  for (const w of sameId) {
-    const i = QUALITY_ORDER.indexOf(w.quality);
-    if (i > bestIdx) { best = w; bestIdx = i; }
+  const previousType = player.weapon ? player.weapon.id : 'default';
+  const previousBest = bestOwnedWeaponQuality(id);
+  const result = addWeaponCopy(id, quality);
+  const ammoGrant = def.limited ? makeWeapon(id, quality).ammo : 0;
+  const weapon = equipBestOwnedWeapon(id, result.bestQuality, ammoGrant);
+  const lastMerge = result.merges[result.merges.length - 1];
+  if (lastMerge) {
+    const kept = QUALITY_ORDER.indexOf(weapon.quality) > QUALITY_ORDER.indexOf(lastMerge.to)
+      ? ' · 当前保持' + QUALITY_NAME[weapon.quality]
+      : '';
+    addToast(QUALITY_NAME[lastMerge.from] + ' ' + def.name + ' ×3 合成为 ' + QUALITY_NAME[lastMerge.to] + kept, QUALITY_COLOR[lastMerge.to], 17);
+  } else if (previousType !== id) {
+    addToast('已切换为 ' + QUALITY_NAME[weapon.quality] + ' ' + weapon.name, QUALITY_COLOR[weapon.quality], 16);
+  } else if (quality !== 'rare') {
+    addToast(QUALITY_NAME[quality] + ' ' + def.name + ' 合成进度 ' + result.bucket[quality] + '/3' +
+      (previousBest && QUALITY_ORDER.indexOf(previousBest) > QUALITY_ORDER.indexOf(quality) ? ' · 当前品质不变' : ''), QUALITY_COLOR[quality], 15);
+  } else {
+    addToast('稀有 ' + def.name + ' 持有 ×' + result.bucket.rare, QUALITY_COLOR.rare, 15);
   }
-  if (best && qIdx < bestIdx) {
-    GAME.synth = GAME.synth || {};
-    const key = id + ':' + quality;
-    GAME.synth[key] = (GAME.synth[key] || 0) + 1;
-    if (GAME.synth[key] >= 3 && qIdx < QUALITY_ORDER.length - 1) {
-      GAME.synth[key] = 0;
-      const nextQ = QUALITY_ORDER[qIdx + 1];
-      const nextW = makeWeapon(id, nextQ);
-      if (!nextW.limited) nextW.count = 1;
-      GAME.weapons = GAME.weapons.filter(x => !x.limited || x.ammo > 0);
-      GAME.weapons.push(nextW);
-      const nextIdx = QUALITY_ORDER.indexOf(nextQ);
-      if (!best || nextIdx >= bestIdx) player.weapon = nextW;
-      addToast(QUALITY_NAME[quality] + ' ' + def.name + ' ×3 已合成 ' + QUALITY_NAME[nextQ] + ' ' + nextW.name, QUALITY_COLOR[nextQ], 17);
-      AudioSys.score();
-    } else {
-      addToast(QUALITY_NAME[quality] + ' ' + def.name + ' 合成进度 ' + (GAME.synth[key] || 0) + '/3', QUALITY_COLOR[quality], 15);
-      AudioSys.pickup();
-    }
-    return;
-  }
-  const existing = GAME.weapons.find(w => w.id === id && w.quality === quality && !w.limited);
-  if (existing && !def.limited) {
-    existing.count = (existing.count || 0) + 1;
-    const curIdx = QUALITY_ORDER.indexOf(quality);
-    if (existing.count >= 3 && curIdx < QUALITY_ORDER.length - 1) {
-      const upgraded = makeWeapon(id, QUALITY_ORDER[curIdx + 1]);
-      upgraded.count = 1;
-      const idx = GAME.weapons.indexOf(existing);
-      if (idx >= 0) GAME.weapons[idx] = upgraded;
-      player.weapon = upgraded;
-      addToast(QUALITY_NAME[quality] + ' ' + def.name + ' 已升级为 ' + QUALITY_NAME[upgraded.quality] + ' ' + upgraded.name, QUALITY_COLOR[upgraded.quality], 17);
-      AudioSys.score();
-      return;
-    }
-    addToast(QUALITY_NAME[quality] + ' ' + def.name + ' 合成进度 ' + (existing.count || 0) + '/3', QUALITY_COLOR[quality], 15);
-    AudioSys.pickup();
-    return;
-  }
-  const w = makeWeapon(id, quality);
-  if (w.limited) {
-    GAME.weapons = GAME.weapons.filter(x => !x.limited || x.ammo > 0);
-    const sameLimited = GAME.weapons.find(x => x.id === id && x.quality === quality);
-    if (sameLimited && sameLimited.ammo > 0) {
-      const bonus = w.ammo;
-      sameLimited.ammo = Math.min(999, sameLimited.ammo + bonus);
-      player.weapon = sameLimited;
-      addToast('已补充 ' + QUALITY_NAME[quality] + ' ' + w.name + ' +' + bonus, QUALITY_COLOR[quality], 16);
-      AudioSys.pickup();
-      return;
-    }
-    GAME.weapons.push(w);
-    player.weapon = w;
-    addToast('获得 ' + QUALITY_NAME[quality] + ' ' + w.name + ' 弹药 ×' + w.ammo, QUALITY_COLOR[quality], 16);
-    AudioSys.pickup();
-    return;
-  }
-  if (!w.limited) w.count = 1;
-  GAME.weapons = GAME.weapons.filter(x => !x.limited || x.ammo > 0);
-  GAME.weapons.push(w);
-  player.weapon = w;
-  addToast('获得 ' + QUALITY_NAME[quality] + ' ' + w.name, QUALITY_COLOR[quality], 16);
-  AudioSys.pickup();
 }
 
 function tryDash() {
@@ -4150,32 +4185,91 @@ function tryDash() {
   return true;
 }
 
-function showUpgradeChoice() {
-  if (GAME.mode !== 'endless' || upgradeChoice || !player.alive) return;
-  const bag = Object.keys(DROP_WEAPONS).slice();
+const RUN_UPGRADE_POOL = [
+  { id: 'gunDamage', name: '高爆弹芯', desc: '机炮伤害 +15%', color: '#ff8a80', maxStacks: 12 },
+  { id: 'gunRate', name: '超频供弹', desc: '机炮射速 +12%', color: '#ffd166', maxStacks: 12 },
+  { id: 'moveSpeed', name: '矢量引擎', desc: '飞行速度 +8%', color: '#54c7ff', maxStacks: 10 },
+  { id: 'maxHp', name: '强化机身', desc: '最大完整度 +15，并修复 15', color: '#7ee787', maxStacks: 20 },
+  { id: 'luck', name: '幸运航线', desc: '提高良好与稀有武器出现率', color: '#d7a7ff', maxStacks: 10 },
+  { id: 'projectiles', name: '并联炮口', desc: '每次射击弹丸数量 +1', color: '#ff9f43', maxStacks: 4 },
+  { id: 'expGain', name: '战斗分析', desc: '经验获取 +15%', color: '#9be3ff', maxStacks: 10 },
+  { id: 'missiles', name: '扩容挂架', desc: '导弹上限与当前导弹 +4', color: '#bfe3ff', maxStacks: 20 },
+  { id: 'armor', name: '复合装甲', desc: '所受伤害 -5%', color: '#aebecd', maxStacks: 10 }
+];
+
+function chooseThree(source) {
+  const bag = source.slice();
   const chosen = [];
   for (let i = 0; i < 3 && bag.length; i++) {
     const idx = Math.floor(Math.random() * bag.length);
     chosen.push(bag.splice(idx, 1)[0]);
   }
+  return chosen;
+}
+
+function showUpgradeChoice() {
+  if (GAME.mode !== 'endless' || upgradeChoice || !player.alive || (GAME.pendingBuffChoices || 0) <= 0) return false;
+  const available = RUN_UPGRADE_POOL.filter(u => (GAME.upgrades[u.id] || 0) < u.maxStacks);
+  const pool = available.length >= 3 ? available : RUN_UPGRADE_POOL;
   upgradeChoice = {
-    options: chosen.map(id => ({ id, quality: pickQuality() })),
-    index: -1,
+    kind: 'buff',
+    options: chooseThree(pool),
+    level: GAME.level,
+    timer: 0
+  };
+  GAME.pendingBuffChoices--;
+  upgradeChoiceSel = 0;
+  return true;
+}
+
+function showWeaponRewardChoice(wave) {
+  if (GAME.mode !== 'endless' || upgradeChoice || !player.alive) return false;
+  const bag = Object.keys(DROP_WEAPONS).slice();
+  upgradeChoice = {
+    kind: 'weapon',
+    options: chooseThree(bag).map(id => ({ id, quality: pickQuality() })),
+    wave,
     timer: 0
   };
   upgradeChoiceSel = 0;
+  return true;
+}
+
+function applyRunUpgrade(u) {
+  const before = GAME.upgrades[u.id] || 0;
+  if (before >= u.maxStacks) return;
+  GAME.upgrades[u.id] = before + 1;
+  if (u.id === 'maxHp') {
+    player.maxHp += 15;
+    player.hp = Math.min(player.maxHp, player.hp + 15);
+  } else if (u.id === 'missiles') {
+    player.maxMissiles += 4;
+    player.missiles = Math.min(player.maxMissiles, player.missiles + 4);
+  }
+  addToast(u.name + ' · 当前 ' + GAME.upgrades[u.id] + ' 层', u.color, 17);
+}
+
+function finishUpgradeChoice(kind) {
+  upgradeChoice = null;
+  if (kind === 'weapon' && mission && mission.endless && mission.wavePhase === 'reward' && typeof finishEndlessWaveReward === 'function') {
+    finishEndlessWaveReward();
+  }
+  if (!upgradeChoice && (GAME.pendingBuffChoices || 0) > 0) showUpgradeChoice();
 }
 
 function applyUpgrade(u) {
   if (!upgradeChoice) return;
-  applyWeapon(u.id, u.quality);
-  upgradeChoice = null;
+  const kind = upgradeChoice.kind || (u && u.quality ? 'weapon' : 'buff');
+  if (kind === 'buff') applyRunUpgrade(u);
+  else applyWeapon(u.id, u.quality);
+  finishUpgradeChoice(kind);
   AudioSys.score();
 }
 
 function skipUpgradeChoice() {
   if (!upgradeChoice) return false;
-  upgradeChoice = null;
+  const kind = upgradeChoice.kind || 'weapon';
+  finishUpgradeChoice(kind);
   AudioSys.click();
   return true;
 }
@@ -4408,7 +4502,8 @@ function startMission(index, mode) {
   player.weapon = defaultWeapon();
   applyPlaneSetup();
   GAME.exp = 0; GAME.level = 1; GAME.combo = 0; GAME.comboTimer = 0;
-  GAME.upgrades = {}; GAME.weapons = []; GAME.dash = null; GAME.synth = {}; upgradeChoice = null;
+  GAME.upgrades = {}; GAME.weapons = []; GAME.weaponCopies = {}; GAME.pendingBuffChoices = 0;
+  GAME.dash = null; GAME.synth = {}; upgradeChoice = null;
   player.buffs = {};
   cam.x = player.x; cam.y = player.y; cam.shake = 0; cam.zoom = 1;
 
@@ -4461,19 +4556,20 @@ function startEndless() {
   player.weapon = defaultWeapon();
   applyPlaneSetup();
   GAME.exp = 0; GAME.level = 1; GAME.combo = 0; GAME.comboTimer = 0;
-  GAME.upgrades = {}; GAME.weapons = []; GAME.dash = null; GAME.synth = {}; upgradeChoice = null;
+  GAME.upgrades = {}; GAME.weapons = []; GAME.weaponCopies = {}; GAME.pendingBuffChoices = 0;
+  GAME.dash = null; GAME.synth = {}; upgradeChoice = null;
   player.buffs = {};
   cam.x = player.x; cam.y = player.y; cam.shake = 0; cam.zoom = 1;
   mission = {
     def: { index: 0, code: 'ENDLESS SORTIE', name: '自由出击', theme: 'night', objective: '存活越久，击坠越多' },
     index: 0, escort: false, boss: false,
     spawned: 0, aliveTotal: 0, total: 999999,
-    waveIndex: 1, waveTimer: 1.2,
+    waveIndex: 1, completedWaves: 0, wavePhase: 'intermission', waveTimer: 0,
+    bossHistory: [], waveEliteKinds: [],
     transport: null, escortDone: false, failed: false, bossKilled: false, complete: false,
     endless: true
   };
-  spawnWave(['fighter', 'fighter']);
-  mission.spawned = 2;
+  spawnEndlessWave(1);
   setState('playing');
   prewarmRender();
 }
@@ -4660,34 +4756,168 @@ if (typeof module !== 'undefined' && module.exports) {
   };
 }
 
+const ENDLESS_BOSS_KINDS = ['ace', 'eye', 'king'];
+const ENDLESS_BOSS_NAMES = { ace: '绯红彗星', eye: '深渊之眼', king: '终焉之王' };
+
+function endlessBossHistoryGroups(wave, history) {
+  const source = Array.isArray(history) ? history : ((mission && mission.bossHistory) || []);
+  const completedGroups = Math.min(
+    Math.floor((Math.max(1, wave) - 1) / 5),
+    Math.floor(source.length / 5)
+  );
+  const groups = [];
+  for (let groupIndex = 0; groupIndex < completedGroups; groupIndex++) {
+    const start = groupIndex * 5;
+    const group = source.slice(start, start + 5).filter(kind => ENDLESS_BOSS_KINDS.includes(kind));
+    if (group.length === 5) groups.push(group);
+  }
+  return groups;
+}
+
+function selectEndlessEliteKinds(wave, history) {
+  return endlessBossHistoryGroups(wave, history).map(group => pick(group));
+}
+
+function endlessWaveKinds(wave) {
+  const lv = GAME.level;
+  const count = Math.min(26, 1 + Math.ceil(wave * 0.85) + Math.floor(lv / 12) + (lv > 60 ? 3 : 0));
+  const kinds = [];
+  for (let i = 0; i < count; i++) {
+    const r = Math.random();
+    if (r < 0.48) kinds.push('fighter');
+    else if (r < 0.76) kinds.push('gunner');
+    else kinds.push('bomber');
+  }
+  return kinds;
+}
+
+function spawnEndlessElite(kind, wave) {
+  const p = spawnPointAround(player.x, player.y, 850, 1250);
+  const e = makeEnemy(kind, p.x, p.y);
+  const scale = Math.min(0.58, 0.3 + Math.max(0, wave - 6) * 0.015);
+  e.hp = Math.max(1, Math.round(e.hp * scale));
+  e.maxHp = e.hp;
+  e.score = Math.max(1, Math.round(e.score * 0.4));
+  e.exp = Math.max(1, Math.round(e.exp * 0.4));
+  e.eliteMinion = true;
+  e.entered = true;
+  e.phase = 1;
+  e.heading = angleTo(e.x, e.y, player.x, player.y);
+  enemies.push(e);
+  return e;
+}
+
+function spawnEndlessWave(wave) {
+  if (!mission || !mission.endless) return;
+  mission.waveIndex = Math.max(1, wave);
+  mission.wavePhase = 'mobs';
+  mission.waveTimer = 0;
+  mission.boss = null;
+  mission.bossKilled = false;
+  const kinds = endlessWaveKinds(mission.waveIndex);
+  spawnWave(kinds);
+  const eliteKinds = selectEndlessEliteKinds(mission.waveIndex);
+  mission.waveEliteKinds = eliteKinds.slice();
+  eliteKinds.forEach((kind, groupIndex) => {
+    const elite = spawnEndlessElite(kind, mission.waveIndex);
+    elite.eliteHistoryGroup = groupIndex + 1;
+  });
+  mission.spawned += kinds.length + eliteKinds.length;
+  mission.aliveTotal = enemies.filter(e => !e.dead).length;
+  addText(player.x, player.y - 70, '第 ' + mission.waveIndex + ' 波来袭', '#ffd166', 18);
+  if (typeof MusicSys !== 'undefined' && MusicSys.play && GAME.state === 'playing') MusicSys.play('combat');
+}
+
+function spawnEndlessBoss(wave) {
+  if (!mission || !mission.endless || mission.wavePhase === 'boss') return;
+  const waveNumber = Math.max(1, wave);
+  mission.bossHistory = mission.bossHistory || [];
+  const historyIndex = waveNumber - 1;
+  const kind = mission.bossHistory[historyIndex] || ENDLESS_BOSS_KINDS[historyIndex % ENDLESS_BOSS_KINDS.length];
+  const p = spawnPointAround(player.x, player.y, 950, 1150);
+  const e = makeEnemy(kind, p.x, p.y);
+  const kindScale = { ace: 0.9, eye: 0.58, king: 0.48 }[kind] || 1;
+  const waveScale = 1 + Math.max(0, wave - 1) * 0.12;
+  e.hp = Math.max(1, Math.round(e.hp * kindScale * waveScale));
+  e.maxHp = e.hp;
+  e.score = Math.max(1, Math.round(e.score * (0.8 + wave * 0.08)));
+  e.exp = Math.max(1, Math.round(e.exp * (0.8 + wave * 0.08)));
+  e.isWaveBoss = true;
+  e.waveNumber = wave;
+  e.phase = 1;
+  e.heading = angleTo(e.x, e.y, player.x, player.y);
+  enemies.push(e);
+  mission.boss = e;
+  mission.bossHistory[historyIndex] = kind;
+  mission.bossKilled = false;
+  mission.wavePhase = 'boss';
+  mission.aliveTotal = enemies.filter(x => !x.dead).length;
+  addToast('第 ' + wave + ' 波 Boss · ' + ENDLESS_BOSS_NAMES[kind] + ' 来袭', '#ff8a80', 18);
+  if (typeof MusicSys !== 'undefined' && MusicSys.play) MusicSys.play('boss');
+}
+
+function finishEndlessWaveReward() {
+  if (!mission || !mission.endless || mission.wavePhase !== 'reward') return false;
+  mission.completedWaves = Math.max(mission.completedWaves || 0, mission.waveIndex);
+  mission.waveIndex++;
+  mission.wavePhase = 'intermission';
+  mission.waveTimer = 0.9;
+  mission.boss = null;
+  mission.bossKilled = false;
+  player.missiles = Math.min(player.maxMissiles, player.missiles + 8);
+  addText(player.x, player.y - 70, '整备完成 · 下一波即将来袭', '#7ee787', 17);
+  if (typeof MusicSys !== 'undefined' && MusicSys.play) MusicSys.play('combat');
+  return true;
+}
+
+function updateEndlessWave(dt) {
+  mission.aliveTotal = enemies.filter(e => !e.dead).length;
+  if (mission.wavePhase === 'mobs') {
+    if (mission.aliveTotal === 0) {
+      mission.wavePhase = 'bossPending';
+      mission.waveTimer = 0.8;
+      addText(player.x, player.y - 70, '高威胁目标正在接近', '#ff8a80', 17);
+    }
+    return;
+  }
+  if (mission.wavePhase === 'bossPending') {
+    mission.waveTimer -= dt;
+    if (mission.waveTimer <= 0) spawnEndlessBoss(mission.waveIndex);
+    return;
+  }
+  if (mission.wavePhase === 'boss') {
+    if (mission.boss && (mission.boss.dead || mission.bossKilled)) {
+      for (const e of enemies) {
+        if (e !== mission.boss && !e.dead) e.dead = true;
+      }
+      enemies = enemies.filter(e => e === mission.boss || !e.dead);
+      mission.aliveTotal = 0;
+      mission.wavePhase = 'reward';
+      mission.completedWaves = Math.max(mission.completedWaves || 0, mission.waveIndex);
+      showWeaponRewardChoice(mission.waveIndex);
+    }
+    return;
+  }
+  if (mission.wavePhase === 'reward') {
+    if (!upgradeChoice) showWeaponRewardChoice(mission.waveIndex);
+    return;
+  }
+  if (mission.wavePhase === 'intermission') {
+    mission.waveTimer -= dt;
+    if (mission.waveTimer <= 0) spawnEndlessWave(mission.waveIndex);
+  }
+}
+
 
 function updateMissionSpawn(dt) {
   if (!mission || mission.complete || mission.failed) return;
   if (mission.def && (mission.def.type === 'intercept' || mission.def.type === 'survive' || mission.def.type === 'race')) return;
-  mission.waveTimer -= dt;
-  mission.aliveTotal = enemies.filter(e => !e.dead).length;
   if (mission.endless) {
-    if (mission.aliveTotal === 0 && mission.waveTimer <= 0) {
-      const lv = GAME.level;
-      const n = Math.min(30, 2 + Math.ceil(mission.waveIndex * 0.9) + Math.floor(lv / 12) + (lv > 60 ? 3 : 0));
-      const kinds = [];
-      for (let i = 0; i < n; i++) {
-        const r = Math.random();
-        if (r < 0.42) kinds.push('fighter');
-        else if (r < 0.68) kinds.push('gunner');
-        else if (r < 0.92) kinds.push('bomber');
-        else kinds.push('ace');
-      }
-      if (lv > 20 && Math.random() < 0.4) kinds.push('ace');
-      spawnWave(kinds);
-      mission.spawned += kinds.length;
-      mission.waveIndex++;
-      player.missiles = Math.min(player.maxMissiles, player.missiles + 8);
-      addText(player.x, player.y - 70, '第 ' + mission.waveIndex + ' 波来袭', '#ffd166', 18);
-      mission.waveTimer = 3.5;
-    }
+    updateEndlessWave(dt);
     return;
   }
+  mission.waveTimer -= dt;
+  mission.aliveTotal = enemies.filter(e => !e.dead).length;
   const def = mission.def;
   if (mission.spawned < def.total && mission.aliveTotal < 4 && mission.waveTimer <= 0) {
     if (mission.boss) {
@@ -5577,7 +5807,7 @@ function finishMission(success) {
     if (!mission.endless && GAME.missionAttempts) delete GAME.missionAttempts[GAME.missionIndex];
   } else {
     // P39: 失败俏皮话按战绩分组随机(自由模式=本局波数, 战役=该任务尝试次数)
-    const wavesDone = mission.endless ? mission.waveIndex : 0;
+    const wavesDone = mission.endless ? (mission.completedWaves || 0) : 0;
     const attemptsDone = mission.endless ? 0 : ((GAME.missionAttempts && GAME.missionAttempts[GAME.missionIndex]) || 1);
     const failPool = mission.endless ? failLineGroupEndless(wavesDone) : failLineGroupCampaign(attemptsDone);
     GAME.endStats = {
@@ -5662,7 +5892,7 @@ function requestPause(source) {
   input.touch.throttleBarId = null;
   input.touch.swipeId = null;
   input.fireHeld = false; input.mslHeld = false;
-  input.mouse.down = false;
+  clearMouseButtonState();
   touchSwipe.active = false; touchSwipe.dir = null;
   lastTime = performance.now();   // 恢复首帧 dt 钳制(与 loop 的 min(0.05) 双保险)
   return true;
@@ -5743,6 +5973,7 @@ function buildMenuButtons(state) {
         saveKeybinds();
         save.sfxVolume = SFX_VOLUME_DEFAULT;
         save.engineVolume = ENGINE_VOLUME_DEFAULT;
+        save.cameraMode = CAMERA_HEADING_UP;
         if (!input.isTouch) {
           save.controlScheme = 'keyboard+mouse';
           controlSchemeChosen = true;
@@ -5773,9 +6004,10 @@ function settingsMetrics() {
   const rowH = touchPortrait ? 48 : 46;
   const volumeRowH = touchPortrait ? 44 : 38;
   const controlH = touchPortrait ? 44 : 38;
-  const contentH = SETTINGS_ACTIONS.length * rowH + 14 + volumeRowH * 2 + 16 + controlH + 18;
+  const cameraH = touchPortrait ? 44 : 38;
+  const contentH = SETTINGS_ACTIONS.length * rowH + 14 + volumeRowH * 2 + 16 + controlH + 8 + cameraH + 18;
   return { touchPortrait, rowW, rowX, rowH, volumeRowH, controlH, viewportTop, viewportBottom,
-    viewportH: viewportBottom - viewportTop, contentH };
+    cameraH, viewportH: viewportBottom - viewportTop, contentH };
 }
 
 function settingsMaxScroll() {
@@ -5839,6 +6071,19 @@ function controlSchemeRowAt(x, y) {
   return (x >= R.x && x <= R.x + R.w && y >= R.y && y <= R.y + R.h) ? true : false;
 }
 
+function cameraModeRowLayout() {
+  const L = settingsLayout();
+  const CR = controlSchemeRowLayout();
+  return { x: L.rowX, w: L.rowW, y: CR.y + CR.h + 8, h: L.cameraH };
+}
+
+function cameraModeRowAt(x, y) {
+  const L = settingsLayout();
+  if (y < L.viewportTop || y > L.viewportBottom) return false;
+  const R = cameraModeRowLayout();
+  return x >= R.x && x <= R.x + R.w && y >= R.y && y <= R.y + R.h;
+}
+
 function startBindCapture(action) {
   captureBind = action;
   AudioSys.click();
@@ -5881,6 +6126,12 @@ function handleSettingsPress(x, y) {
     AudioSys.click();
     return true;
   }
+  if (cameraModeRowAt(x, y)) {
+    save.cameraMode = save.cameraMode === CAMERA_WORLD_UP ? CAMERA_HEADING_UP : CAMERA_WORLD_UP;
+    saveNow();
+    AudioSys.click();
+    return true;
+  }
   return false;
 }
 
@@ -5893,7 +6144,7 @@ function drawSettings() {
   ctx.fillText(input.isTouch ? '设置' : '按键设置', W / 2, H * 0.065);
   ctx.fillStyle = '#aebecd';
   ctx.font = '500 ' + (input.isTouch ? 12 : Math.round(Math.min(13, W * 0.018))) + 'px "Microsoft YaHei", sans-serif';
-  ctx.fillText(input.isTouch ? 'PC 按键只读' : '点击动作后按下新按键；支持键盘、鼠标左/中/右键；Esc 取消本次修改', W / 2, H * 0.095);
+  ctx.fillText(input.isTouch ? 'PC 按键只读' : '点击动作后按下新按键；支持键盘、鼠标左/中/右键及侧键；Esc 取消本次修改', W / 2, H * 0.095);
   const L = settingsLayout();
   ctx.save();
   ctx.beginPath();
@@ -5959,6 +6210,31 @@ function drawSettings() {
   ctx.fillStyle = '#ffd166';
   ctx.fillText(save.controlScheme === 'keyboard-only' ? '纯键盘(鼠标仅界面点击)' : '键鼠(鼠标转向)', CR.x + CR.w - 18, CR.y + CR.h * 0.62);
   ctx.globalAlpha = 1;
+
+  const VR = cameraModeRowLayout();
+  ctx.fillStyle = 'rgba(14,32,52,0.85)';
+  ctx.strokeStyle = 'rgba(140,180,210,0.5)';
+  ctx.lineWidth = 1.2;
+  roundRect(VR.x, VR.y, VR.w, VR.h - 4, 7);
+  ctx.fill(); ctx.stroke();
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#dfe9f2';
+  ctx.font = '600 ' + (L.touchPortrait ? 13 : Math.round(Math.min(15, W * 0.02))) + 'px "Microsoft YaHei", sans-serif';
+  ctx.fillText('视角模式', VR.x + 18, VR.y + VR.h * 0.62);
+  const worldUp = save.cameraMode === CAMERA_WORLD_UP;
+  const switchW = 44, switchH = 22;
+  const switchX = VR.x + VR.w - 18 - switchW;
+  const switchY = VR.y + (VR.h - 4 - switchH) / 2;
+  ctx.textAlign = 'right';
+  ctx.fillStyle = worldUp ? '#9be3ff' : '#ffd166';
+  ctx.fillText(worldUp ? '地图朝上' : '战机朝上', switchX - 10, VR.y + VR.h * 0.62);
+  ctx.fillStyle = worldUp ? '#287aa8' : '#725d25';
+  roundRect(switchX, switchY, switchW, switchH, switchH / 2);
+  ctx.fill();
+  ctx.fillStyle = '#f5f8fa';
+  ctx.beginPath();
+  ctx.arc(switchX + (worldUp ? switchW - switchH / 2 : switchH / 2), switchY + switchH / 2, 8, 0, TAU);
+  ctx.fill();
   ctx.restore();
 
   const maxScroll = settingsMaxScroll();
@@ -6102,8 +6378,12 @@ function updateTransition(dt) {
 }
 
 // ---------- camera ----------
+function cameraViewAngle() {
+  return save && save.cameraMode === CAMERA_WORLD_UP ? 0 : -Math.PI / 2 - player.heading;
+}
+
 function updateCamera(dt) {
-  // 追尾视角(任务书 20):相机硬锁玩家(旋转中心=飞机位置,否则飞机在屏幕上画圈)
+  // 相机始终锁定玩家位置；视角设置只决定是否跟随玩家航向旋转。
   cam.x = player.x; cam.y = player.y;
   cam.zoom = lerp(cam.zoom, CAM_ZOOM, dt * 2);
   cam.shake = Math.max(0, cam.shake - dt * 34);
@@ -7247,9 +7527,9 @@ function drawWorld() {
   drawWater(world.theme);
   drawSun();
   ctx.save();
-  // 追尾视角:飞机锁在屏幕 (W/2, H*0.62),机头朝上(世界旋转 -π/2 - heading)(任务书 20)
+  // 战机固定在屏幕锚点；视角可在战机朝上与地图朝上之间切换。
   ctx.translate(W / 2, H * CAM_ANCHOR_Y);
-  ctx.rotate(-Math.PI / 2 - player.heading);
+  ctx.rotate(cameraViewAngle());
   ctx.scale(cam.zoom, cam.zoom);
   ctx.translate(-cam.x + cam.shakeX, -cam.y + cam.shakeY);
   drawIslands();
@@ -7312,9 +7592,9 @@ function drawHudBar(x, y, w, h, ratio, fill, back, label, value) {
 // ---------- 屏幕边缘指引箭头(drawHUD 内调用,屏幕坐标) ----------
 function drawOffscreenArrow(tx, ty, color) {
   if (!player || !cam) return;
-  // 世界坐标 → 屏幕坐标(追尾相机,与 drawWorld 变换一致;任务书 20)
+  // 世界坐标 → 屏幕坐标，与 drawWorld 当前视角变换一致。
   const dx = tx - cam.x, dy = ty - cam.y;
-  const camAng = -Math.PI / 2 - player.heading;
+  const camAng = cameraViewAngle();
   const cosA = Math.cos(camAng), sinA = Math.sin(camAng);
   const sx = (dx * cosA - dy * sinA) * cam.zoom + W / 2;
   const sy = (dx * sinA + dy * cosA) * cam.zoom + H * CAM_ANCHOR_Y;
@@ -7414,6 +7694,16 @@ function drawHUD() {
     ctx.fillStyle = '#aebecd';
     ctx.textAlign = 'right';
     ctx.fillText(Math.round(prog * 100) + '%', hr.missionPanel.x + hr.missionPanel.w - 12, hr.missionPanel.y + 74 * hudScale);
+  } else {
+    const phaseNames = { mobs: '清剿敌群', bossPending: 'Boss 接近', boss: 'Boss 战', reward: '选择补给', intermission: '整备' };
+    ctx.font = '600 ' + Math.round(11 * hudScale) + 'px "Microsoft YaHei", sans-serif';
+    ctx.fillStyle = m.wavePhase === 'boss' ? '#ff8a80' : '#ffd166';
+    ctx.textAlign = 'left';
+    ctx.fillText('第 ' + m.waveIndex + ' 波 · ' + (phaseNames[m.wavePhase] || '作战中'), hr.missionPanel.x + 12, hr.missionPanel.y + 62 * hudScale);
+    if (m.wavePhase === 'boss' && m.boss && !m.boss.dead) {
+      drawHudBar(hr.missionPanel.x + 12, hr.missionPanel.y + 66 * hudScale, hr.missionPanel.w - 24,
+        8 * hudScale, m.boss.hp / Math.max(1, m.boss.maxHp), '#ff5e5e', 'rgba(255,255,255,0.12)', '', '');
+    }
   }
   ctx.restore();
 
@@ -7596,8 +7886,8 @@ function drawHUD() {
     size = size * RADAR_MARKER_SCALE;   // P38: 指示标记缩小 50%(命名常量, 保留敌机/僚机标记语义)
     const dx = clamp((x - player.x) * scale, -radarR + 6, radarR - 6);
     const dy = clamp((y - player.y) * scale, -radarR + 6, radarR - 6);
-    // 追尾雷达(任务书 20):相对偏移套同一旋转,机头恒朝屏幕上方
-    const ang = -Math.PI / 2 - player.heading;
+    // 雷达相对偏移使用与世界画面相同的视角旋转。
+    const ang = cameraViewAngle();
     const rx2 = dx * Math.cos(ang) - dy * Math.sin(ang);
     const ry2 = dx * Math.sin(ang) + dy * Math.cos(ang);
     ctx.fillStyle = color;
@@ -7713,7 +8003,7 @@ function drawHUD() {
     if (hr.portraitTouch && hr.threatRing) {
       const tr = hr.threatRing;
       const relX = closestMsl.x - player.x, relY = closestMsl.y - player.y;
-      const viewAng = -Math.PI / 2 - player.heading;
+      const viewAng = cameraViewAngle();
       const screenX = relX * Math.cos(viewAng) - relY * Math.sin(viewAng);
       const screenY = relX * Math.sin(viewAng) + relY * Math.cos(viewAng);
       const threatAng = Math.atan2(screenY, screenX);
@@ -7759,13 +8049,15 @@ function drawHUD() {
     const cps = m.def.checkpoints || [];
     const idx = m.raceIndex || 0;
     if (idx < cps.length) drawOffscreenArrow(cps[idx].x, cps[idx].y, '#ffd166');
+  } else if (m.endless && m.wavePhase === 'boss' && m.boss && !m.boss.dead) {
+    drawOffscreenArrow(m.boss.x, m.boss.y, '#ff5e5e');
   } else if (m.escort && m.transport && !m.transport.dead) {
     drawOffscreenArrow(m.transport.x, m.transport.y, '#4ecb71');
   }
 
   // P32 命中标记: 聚合命中后 ~90ms 在命中点画白色小十字(离散反馈通道, 随聚合窗口限频)
   if (HitFeedback.markT > 0 && player.alive) {
-    const hth = -Math.PI / 2 - player.heading;
+    const hth = cameraViewAngle();
     const hrx = HitFeedback.markX - cam.x + cam.shakeX;
     const hry = HitFeedback.markY - cam.y + cam.shakeY;
     const hmx = W / 2 + (hrx * Math.cos(hth) - hry * Math.sin(hth)) * cam.zoom;
@@ -8612,15 +8904,18 @@ function drawUpgradeChoice() {
   ctx.textAlign = 'center';
   ctx.fillStyle = '#ffd166';
   ctx.font = '900 ' + Math.round(Math.min(30, W * 0.04)) + 'px "Microsoft YaHei", sans-serif';
-  ctx.fillText('武器补给 · 三选一', W / 2, L.panel.y + 42);
+  const choiceKind = c.kind || 'weapon';
+  ctx.fillText(choiceKind === 'buff' ? '等级提升 · 永久强化' : '波次完成 · 武器补给', W / 2, L.panel.y + 42);
   ctx.fillStyle = '#aebecd';
   ctx.font = '500 ' + Math.round(Math.min(14, W * 0.019)) + 'px "Microsoft YaHei", sans-serif';
-  ctx.fillText('Lv.' + GAME.level + ' 选择一项武器，本局生效', W / 2, L.panel.y + 68);
+  ctx.fillText(choiceKind === 'buff'
+    ? 'Lv.' + (c.level || GAME.level) + ' 选择一项本局永久强化'
+    : '第 ' + (c.wave || (mission ? mission.waveIndex : 1)) + ' 波完成 · 选择一项武器', W / 2, L.panel.y + 68);
   for (let i = 0; i < c.options.length; i++) {
     const o = c.options[i];
-    const def = DROP_WEAPONS[o.id];
-    const wName = QUALITY_NAME[o.quality] + ' ' + def.name;
-    const wColor = QUALITY_COLOR[o.quality];
+    const def = choiceKind === 'weapon' ? DROP_WEAPONS[o.id] : o;
+    const wName = choiceKind === 'weapon' ? QUALITY_NAME[o.quality] + ' ' + def.name : o.name;
+    const wColor = choiceKind === 'weapon' ? QUALITY_COLOR[o.quality] : o.color;
     const card = L.cards[i];
     const cardX = card.x, cardY = card.y, cardW = card.w, cardH = card.h;
     const hovered = hoverUpgradeCard(cardX, cardY, cardW, cardH);
@@ -8653,15 +8948,24 @@ function drawUpgradeChoice() {
     }
     ctx.fillStyle = def.limited ? '#ff9f43' : '#7f97a8';
     ctx.font = '700 ' + metaSize + 'px "Microsoft YaHei", sans-serif';
-    const ammo = Math.max(1, Math.round(def.per * QUALITY_MULT[o.quality]));
-    const metaText = def.limited ? '弹药 ×' + ammo : '无限弹药 · 重复可升级';
+    let metaText;
+    if (choiceKind === 'weapon') {
+      const ammo = Math.max(1, Math.round(def.per * QUALITY_MULT[o.quality]));
+      const copies = weaponCopyProgress(o.id, o.quality);
+      const progress = o.quality === 'rare' ? '稀有持有 ×' + copies : '合成 ' + copies + '/3';
+      metaText = def.limited ? '弹药 ×' + ammo + ' · ' + progress : '无限弹药 · ' + progress;
+    } else {
+      const stacks = GAME.upgrades[o.id] || 0;
+      metaText = '当前 ' + stacks + ' 层 → ' + Math.min(o.maxStacks, stacks + 1) + ' 层';
+    }
+    ctx.fillStyle = choiceKind === 'weapon' && def.limited ? '#ff9f43' : '#7f97a8';
     if (portraitTouch) {
       const metaLines = wrapCharacters(metaText, cardW - 16, 2);
       for (let line = 0; line < metaLines.length; line++) {
         ctx.fillText(metaLines[line], cardX + cardW / 2, cardY + 124 + line * 17, cardW - 16);
       }
     } else {
-      ctx.fillText(metaText, cardX + cardW / 2, cardY + 92);
+      ctx.fillText(metaText, cardX + cardW / 2, cardY + 92, cardW - 14);
     }
   }
   const skipHovered = inRect(input.mouse.x, input.mouse.y, L.skip);
@@ -8677,7 +8981,7 @@ function drawUpgradeChoice() {
   ctx.shadowBlur = 0;
   ctx.fillStyle = '#dfe9f2';
   ctx.font = '700 ' + (portraitTouch ? 14 : Math.round(Math.min(15, W * 0.02))) + 'px "Microsoft YaHei", sans-serif';
-  ctx.fillText('放弃并保留当前装备', L.skip.x + L.skip.w / 2, L.skip.y + L.skip.h / 2 + 5);
+  ctx.fillText(choiceKind === 'buff' ? '放弃本次强化' : '放弃并保留当前装备', L.skip.x + L.skip.w / 2, L.skip.y + L.skip.h / 2 + 5);
 }
 
 function upgradeChoiceLayout() {
@@ -8811,7 +9115,6 @@ function update(dt) {
       updatePlayer(dt);
       updateBuffs(dt);
       acquireLock(dt);
-      updateMissionSpawn(dt);
       for (const e of enemies) if (!e.dead) updateEnemy(e, dt);
       for (const a of allies) {
         if (!a || a.kind !== 'wingman' || a.dead) continue;

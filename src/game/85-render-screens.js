@@ -459,15 +459,18 @@ function drawUpgradeChoice() {
   ctx.textAlign = 'center';
   ctx.fillStyle = '#ffd166';
   ctx.font = '900 ' + Math.round(Math.min(30, W * 0.04)) + 'px "Microsoft YaHei", sans-serif';
-  ctx.fillText('武器补给 · 三选一', W / 2, L.panel.y + 42);
+  const choiceKind = c.kind || 'weapon';
+  ctx.fillText(choiceKind === 'buff' ? '等级提升 · 永久强化' : '波次完成 · 武器补给', W / 2, L.panel.y + 42);
   ctx.fillStyle = '#aebecd';
   ctx.font = '500 ' + Math.round(Math.min(14, W * 0.019)) + 'px "Microsoft YaHei", sans-serif';
-  ctx.fillText('Lv.' + GAME.level + ' 选择一项武器，本局生效', W / 2, L.panel.y + 68);
+  ctx.fillText(choiceKind === 'buff'
+    ? 'Lv.' + (c.level || GAME.level) + ' 选择一项本局永久强化'
+    : '第 ' + (c.wave || (mission ? mission.waveIndex : 1)) + ' 波完成 · 选择一项武器', W / 2, L.panel.y + 68);
   for (let i = 0; i < c.options.length; i++) {
     const o = c.options[i];
-    const def = DROP_WEAPONS[o.id];
-    const wName = QUALITY_NAME[o.quality] + ' ' + def.name;
-    const wColor = QUALITY_COLOR[o.quality];
+    const def = choiceKind === 'weapon' ? DROP_WEAPONS[o.id] : o;
+    const wName = choiceKind === 'weapon' ? QUALITY_NAME[o.quality] + ' ' + def.name : o.name;
+    const wColor = choiceKind === 'weapon' ? QUALITY_COLOR[o.quality] : o.color;
     const card = L.cards[i];
     const cardX = card.x, cardY = card.y, cardW = card.w, cardH = card.h;
     const hovered = hoverUpgradeCard(cardX, cardY, cardW, cardH);
@@ -500,15 +503,24 @@ function drawUpgradeChoice() {
     }
     ctx.fillStyle = def.limited ? '#ff9f43' : '#7f97a8';
     ctx.font = '700 ' + metaSize + 'px "Microsoft YaHei", sans-serif';
-    const ammo = Math.max(1, Math.round(def.per * QUALITY_MULT[o.quality]));
-    const metaText = def.limited ? '弹药 ×' + ammo : '无限弹药 · 重复可升级';
+    let metaText;
+    if (choiceKind === 'weapon') {
+      const ammo = Math.max(1, Math.round(def.per * QUALITY_MULT[o.quality]));
+      const copies = weaponCopyProgress(o.id, o.quality);
+      const progress = o.quality === 'rare' ? '稀有持有 ×' + copies : '合成 ' + copies + '/3';
+      metaText = def.limited ? '弹药 ×' + ammo + ' · ' + progress : '无限弹药 · ' + progress;
+    } else {
+      const stacks = GAME.upgrades[o.id] || 0;
+      metaText = '当前 ' + stacks + ' 层 → ' + Math.min(o.maxStacks, stacks + 1) + ' 层';
+    }
+    ctx.fillStyle = choiceKind === 'weapon' && def.limited ? '#ff9f43' : '#7f97a8';
     if (portraitTouch) {
       const metaLines = wrapCharacters(metaText, cardW - 16, 2);
       for (let line = 0; line < metaLines.length; line++) {
         ctx.fillText(metaLines[line], cardX + cardW / 2, cardY + 124 + line * 17, cardW - 16);
       }
     } else {
-      ctx.fillText(metaText, cardX + cardW / 2, cardY + 92);
+      ctx.fillText(metaText, cardX + cardW / 2, cardY + 92, cardW - 14);
     }
   }
   const skipHovered = inRect(input.mouse.x, input.mouse.y, L.skip);
@@ -524,7 +536,7 @@ function drawUpgradeChoice() {
   ctx.shadowBlur = 0;
   ctx.fillStyle = '#dfe9f2';
   ctx.font = '700 ' + (portraitTouch ? 14 : Math.round(Math.min(15, W * 0.02))) + 'px "Microsoft YaHei", sans-serif';
-  ctx.fillText('放弃并保留当前装备', L.skip.x + L.skip.w / 2, L.skip.y + L.skip.h / 2 + 5);
+  ctx.fillText(choiceKind === 'buff' ? '放弃本次强化' : '放弃并保留当前装备', L.skip.x + L.skip.w / 2, L.skip.y + L.skip.h / 2 + 5);
 }
 
 function upgradeChoiceLayout() {

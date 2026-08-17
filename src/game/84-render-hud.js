@@ -1,9 +1,9 @@
 // ---------- 屏幕边缘指引箭头(drawHUD 内调用,屏幕坐标) ----------
 function drawOffscreenArrow(tx, ty, color) {
   if (!player || !cam) return;
-  // 世界坐标 → 屏幕坐标(追尾相机,与 drawWorld 变换一致;任务书 20)
+  // 世界坐标 → 屏幕坐标，与 drawWorld 当前视角变换一致。
   const dx = tx - cam.x, dy = ty - cam.y;
-  const camAng = -Math.PI / 2 - player.heading;
+  const camAng = cameraViewAngle();
   const cosA = Math.cos(camAng), sinA = Math.sin(camAng);
   const sx = (dx * cosA - dy * sinA) * cam.zoom + W / 2;
   const sy = (dx * sinA + dy * cosA) * cam.zoom + H * CAM_ANCHOR_Y;
@@ -103,6 +103,16 @@ function drawHUD() {
     ctx.fillStyle = '#aebecd';
     ctx.textAlign = 'right';
     ctx.fillText(Math.round(prog * 100) + '%', hr.missionPanel.x + hr.missionPanel.w - 12, hr.missionPanel.y + 74 * hudScale);
+  } else {
+    const phaseNames = { mobs: '清剿敌群', bossPending: 'Boss 接近', boss: 'Boss 战', reward: '选择补给', intermission: '整备' };
+    ctx.font = '600 ' + Math.round(11 * hudScale) + 'px "Microsoft YaHei", sans-serif';
+    ctx.fillStyle = m.wavePhase === 'boss' ? '#ff8a80' : '#ffd166';
+    ctx.textAlign = 'left';
+    ctx.fillText('第 ' + m.waveIndex + ' 波 · ' + (phaseNames[m.wavePhase] || '作战中'), hr.missionPanel.x + 12, hr.missionPanel.y + 62 * hudScale);
+    if (m.wavePhase === 'boss' && m.boss && !m.boss.dead) {
+      drawHudBar(hr.missionPanel.x + 12, hr.missionPanel.y + 66 * hudScale, hr.missionPanel.w - 24,
+        8 * hudScale, m.boss.hp / Math.max(1, m.boss.maxHp), '#ff5e5e', 'rgba(255,255,255,0.12)', '', '');
+    }
   }
   ctx.restore();
 
@@ -285,8 +295,8 @@ function drawHUD() {
     size = size * RADAR_MARKER_SCALE;   // P38: 指示标记缩小 50%(命名常量, 保留敌机/僚机标记语义)
     const dx = clamp((x - player.x) * scale, -radarR + 6, radarR - 6);
     const dy = clamp((y - player.y) * scale, -radarR + 6, radarR - 6);
-    // 追尾雷达(任务书 20):相对偏移套同一旋转,机头恒朝屏幕上方
-    const ang = -Math.PI / 2 - player.heading;
+    // 雷达相对偏移使用与世界画面相同的视角旋转。
+    const ang = cameraViewAngle();
     const rx2 = dx * Math.cos(ang) - dy * Math.sin(ang);
     const ry2 = dx * Math.sin(ang) + dy * Math.cos(ang);
     ctx.fillStyle = color;
@@ -402,7 +412,7 @@ function drawHUD() {
     if (hr.portraitTouch && hr.threatRing) {
       const tr = hr.threatRing;
       const relX = closestMsl.x - player.x, relY = closestMsl.y - player.y;
-      const viewAng = -Math.PI / 2 - player.heading;
+      const viewAng = cameraViewAngle();
       const screenX = relX * Math.cos(viewAng) - relY * Math.sin(viewAng);
       const screenY = relX * Math.sin(viewAng) + relY * Math.cos(viewAng);
       const threatAng = Math.atan2(screenY, screenX);
@@ -448,13 +458,15 @@ function drawHUD() {
     const cps = m.def.checkpoints || [];
     const idx = m.raceIndex || 0;
     if (idx < cps.length) drawOffscreenArrow(cps[idx].x, cps[idx].y, '#ffd166');
+  } else if (m.endless && m.wavePhase === 'boss' && m.boss && !m.boss.dead) {
+    drawOffscreenArrow(m.boss.x, m.boss.y, '#ff5e5e');
   } else if (m.escort && m.transport && !m.transport.dead) {
     drawOffscreenArrow(m.transport.x, m.transport.y, '#4ecb71');
   }
 
   // P32 命中标记: 聚合命中后 ~90ms 在命中点画白色小十字(离散反馈通道, 随聚合窗口限频)
   if (HitFeedback.markT > 0 && player.alive) {
-    const hth = -Math.PI / 2 - player.heading;
+    const hth = cameraViewAngle();
     const hrx = HitFeedback.markX - cam.x + cam.shakeX;
     const hry = HitFeedback.markY - cam.y + cam.shakeY;
     const hmx = W / 2 + (hrx * Math.cos(hth) - hry * Math.sin(hth)) * cam.zoom;

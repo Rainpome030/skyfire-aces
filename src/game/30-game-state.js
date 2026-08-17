@@ -50,6 +50,8 @@ const GAME = {
   comboMax: 5,
   upgrades: {},
   weapons: [],
+  weaponCopies: {},
+  pendingBuffChoices: 0,
   dash: null,
   pickupsTaken: 0,
   reviveCount: 0,
