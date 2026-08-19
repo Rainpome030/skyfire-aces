@@ -3,6 +3,9 @@
 (function installSkyfireLegacyBridge() {
   const originalDrawWorld = drawWorld;
   const readonlyCache = new WeakMap();
+  const ARRAY_MUTATORS = new Set([
+    'copyWithin', 'fill', 'pop', 'push', 'reverse', 'shift', 'sort', 'splice', 'unshift'
+  ]);
   let worldRenderer = null;
   let rendererFailureReported = false;
   const V2_AUTO_GUN = true;
@@ -44,17 +47,22 @@
   }
 
   function readonly(value) {
-    if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return value;
-    // Native arrays expose non-configurable prototype invariants that a
-    // recursive Proxy cannot safely virtualize. The renderer only consumes
-    // these arrays, so keep their native methods and never mutate them here.
-    if (Array.isArray(value)) return value;
+    if (typeof value !== 'object' || value === null) return value;
     const cached = readonlyCache.get(value);
     if (cached) return cached;
 
     const view = new Proxy(value, {
       get(target, property, receiver) {
-        return readonly(Reflect.get(target, property, receiver));
+        if (Array.isArray(target) && ARRAY_MUTATORS.has(property)) {
+          return function rejectSnapshotArrayMutation() {
+            throw new TypeError('Skyfire legacy snapshots are read-only.');
+          };
+        }
+        const result = Reflect.get(target, property, receiver);
+        // Keep native methods callable with the proxy as their receiver. Their
+        // element reads still pass through this get trap and become read-only.
+        if (typeof result === 'function') return result.bind(receiver);
+        return readonly(result);
       },
       set() {
         return false;

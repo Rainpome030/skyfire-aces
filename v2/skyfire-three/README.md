@@ -28,9 +28,13 @@ npm run dev
 ```powershell
 npm test
 npm run build
+npm run smoke
+npm run gate
 ```
 
 `npm test` 固定检查左右转向、航向位移、模型朝向、目标方位和世界稳定相机约定。构建会先从仓库根目录的 `src/game/` 重新生成本地 legacy bridge bundle，生成物不会提交。
+
+`npm run smoke` 会先构建，再启动临时预览服务器和无头 Chrome/Edge。它分别在桌面 `1440x900` 与手机竖屏 `375x667` 验证：页面启动、Three.js `ready/fallback` 标记、标题→任务选择→简报→战场的真实点击流程、页面无横纵溢出、控制台无错误。Chrome 不在默认安装位置时，可用 `SKYFIRE_CHROME_PATH` 指定可执行文件。`npm run gate` 串行执行纯函数测试和完整 smoke 门禁。
 
 浏览器中 `document.documentElement.dataset.skyfireThree` 为 `ready` 时表示 Three.js 已接管战斗世界；为 `fallback` 时表示保留旧版二维渲染。
 

@@ -9,6 +9,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build": "npm run prepare:legacy && npm run typecheck && vite build",
+    "smoke": "npm run build && node scripts/smoke.mjs",
+    "gate": "npm test && npm run smoke",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
