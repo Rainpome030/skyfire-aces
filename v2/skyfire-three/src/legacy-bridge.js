@@ -37,6 +37,10 @@
   }
 
   function getSnapshot() {
+    const tacticalVisible = GAME.state === 'playing' &&
+      !upgradeChoice &&
+      !(typeof controlSchemeAsk !== 'undefined' && controlSchemeAsk) &&
+      !(typeof ChapterCard !== 'undefined' && ChapterCard.isActive());
     return Object.freeze({
       GAME: readonly(GAME),
       player: readonly(player),
@@ -52,6 +56,7 @@
       camera: readonly(cam),
       cameraMode: save && save.cameraMode === CAMERA_WORLD_UP ? 'world-up' : 'heading-up',
       lockTargetId: player.target && player.target.id !== undefined ? player.target.id : null,
+      tacticalVisible,
       gameTime
     });
   }

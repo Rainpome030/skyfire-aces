@@ -116,6 +116,7 @@ export interface LegacySnapshot {
   cameraMode?: 'world-up' | 'heading-up';
   gameTime: number;
   lockTargetId?: LegacyEntityId | null;
+  tacticalVisible?: boolean;
 }
 
 export interface RenderViewport {

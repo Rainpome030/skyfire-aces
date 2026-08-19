@@ -1,6 +1,7 @@
 import './three.css';
 import { createSkyfireWorldRenderer, type SkyfireWorldRenderer } from './render/world-renderer';
 import type { LegacySnapshot, RenderViewport } from './render/snapshot';
+import { TacticalOverlay } from './ui/tactical-overlay';
 
 interface LegacyBridge {
   getSnapshot(): LegacySnapshot;
@@ -24,15 +25,27 @@ const bridge = window.SkyfireLegacyBridge;
 if (!bridge) {
   throw new Error('SkyfireLegacyBridge must be installed before the Three.js entry.');
 }
+const activeBridge = bridge;
 
 const root = required<HTMLDivElement>('#three-root');
 const canvas = document.createElement('canvas');
 canvas.className = 'skyfire-three-canvas';
 canvas.setAttribute('aria-hidden', 'true');
 root.append(canvas);
+const tacticalRoot = document.createElement('div');
+tacticalRoot.id = 'tactical-overlay';
+tacticalRoot.hidden = true;
+document.body.append(tacticalRoot);
+const tacticalOverlay = new TacticalOverlay(tacticalRoot);
 
 let renderer: SkyfireWorldRenderer | null = null;
 let lastGameTime = 0;
+let visibilityFrame = 0;
+
+function syncTacticalVisibility(): void {
+  tacticalOverlay.setVisible(activeBridge.getSnapshot().tacticalVisible === true);
+  visibilityFrame = requestAnimationFrame(syncTacticalVisibility);
+}
 
 try {
   renderer = createSkyfireWorldRenderer(canvas);
@@ -43,8 +56,10 @@ try {
       const delta = Math.min(0.1, Math.max(0, gameTime - lastGameTime));
       lastGameTime = gameTime;
       renderer?.render(snapshot, delta || 1 / 60);
+      if (renderer) tacticalOverlay.update(snapshot, renderer);
     }
   });
+  syncTacticalVisibility();
   document.documentElement.dataset.skyfireThree = 'ready';
 } catch (error) {
   document.documentElement.dataset.skyfireThree = 'fallback';
@@ -57,5 +72,7 @@ window.addEventListener('resize', () => {
 });
 
 window.addEventListener('beforeunload', () => {
+  cancelAnimationFrame(visibilityFrame);
+  tacticalOverlay.dispose();
   renderer?.dispose();
 });

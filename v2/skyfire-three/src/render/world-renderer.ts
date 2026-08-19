@@ -158,6 +158,18 @@ export class SkyfireWorldRenderer {
     this.renderer.dispose();
   }
 
+  projectEntity(entity: LegacyEntitySnapshot): { x: number; y: number; visible: boolean } {
+    const point = worldPosition(finite(entity.x), finite(entity.y), finite(entity.altitude));
+    point.project(this.camera);
+    const width = Math.max(1, this.renderer.domElement.clientWidth);
+    const height = Math.max(1, this.renderer.domElement.clientHeight);
+    return {
+      x: (point.x * 0.5 + 0.5) * width,
+      y: (-point.y * 0.5 + 0.5) * height,
+      visible: point.z >= -1 && point.z <= 1 && Math.abs(point.x) <= 1.08 && Math.abs(point.y) <= 1.08
+    };
+  }
+
   private createLighting(): void {
     const sun = new THREE.DirectionalLight(0xffe7bf, 3.1);
     sun.position.set(-40, 90, -28);

@@ -19,3 +19,83 @@
   z-index: 1;
   background: transparent;
 }
+
+#tactical-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.tactical-tag {
+  position: absolute;
+  min-width: 92px;
+  padding: 5px 7px 4px;
+  transform: translate(12px, -50%);
+  border: 1px solid rgba(255, 91, 105, 0.74);
+  background: rgba(34, 8, 14, 0.78);
+  color: #ffd9dc;
+  box-shadow: 0 0 16px rgba(255, 63, 83, 0.18);
+  font: 700 9px/1.25 Consolas, "Microsoft YaHei", monospace;
+  white-space: nowrap;
+}
+
+.tactical-tag::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 100%;
+  width: 12px;
+  height: 1px;
+  background: currentColor;
+  opacity: 0.7;
+}
+
+.tactical-tag strong,
+.tactical-tag span {
+  display: block;
+}
+
+.tactical-tag strong {
+  color: #ff7382;
+  font-size: 10px;
+}
+
+.tactical-tag span {
+  color: rgba(255, 226, 229, 0.74);
+  font-size: 8px;
+}
+
+.tactical-tag.player {
+  transform: translate(12px, 4px);
+  border-color: rgba(78, 205, 255, 0.78);
+  background: rgba(4, 27, 42, 0.8);
+  color: #75dcff;
+  box-shadow: 0 0 16px rgba(72, 196, 255, 0.2);
+}
+
+.tactical-tag.player strong {
+  color: #74dcff;
+}
+
+@media (max-width: 520px) {
+  .tactical-tag {
+    min-width: 74px;
+    padding: 4px 5px 3px;
+    transform: translate(8px, -50%);
+    font-size: 8px;
+  }
+
+  .tactical-tag::before {
+    width: 8px;
+  }
+
+  .tactical-tag strong {
+    font-size: 9px;
+  }
+
+  .tactical-tag span {
+    font-size: 7px;
+  }
+}
