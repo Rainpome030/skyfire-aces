@@ -215,6 +215,18 @@ class CdpBrowser {
     await sleep(120);
   }
 
+  async touch(x, y, id = 1) {
+    await this.send('Input.dispatchTouchEvent', {
+      type: 'touchStart',
+      touchPoints: [{ x, y, id, radiusX: 1, radiusY: 1, force: 1 }]
+    });
+    await this.send('Input.dispatchTouchEvent', {
+      type: 'touchEnd',
+      touchPoints: []
+    });
+    await sleep(120);
+  }
+
   async stop() {
     try { this.socket?.close(); } catch {}
     if (this.process && this.process.exitCode === null) {
@@ -344,6 +356,17 @@ async function runViewport(config, pageUrl, executable) {
     check(`${config.name} battlefield has no page overflow`, !layout.overflowX && !layout.overflowY, JSON.stringify(layout));
     check(`${config.name} viewport is exact`, layout.viewport.width === config.width && layout.viewport.height === config.height,
       JSON.stringify(layout.viewport));
+    if (config.mobile) {
+      await browser.touch(config.width / 2, config.height / 2);
+      const touchState = await browser.evaluate(`({
+        isTouch: input.isTouch === true,
+        portraitHud: hudRects().portraitTouch === true,
+        state: GAME.state
+      })`);
+      check(`${config.name} real touch activates portrait controls`,
+        touchState.isTouch && touchState.portraitHud && touchState.state === 'playing',
+        JSON.stringify(touchState));
+    }
     check(`${config.name} console has no errors`, browser.consoleErrors.length === 0,
       browser.consoleErrors.join(' || '));
   } finally {
