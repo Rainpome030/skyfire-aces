@@ -9,6 +9,7 @@ export type {
   LegacyPlayerSnapshot,
   LegacyProjectileSnapshot,
   LegacySnapshot,
+  LegacyTargetingSnapshot,
   LegacyWorldSnapshot,
   LegacyWorldThemeSnapshot,
   RenderViewport

@@ -104,6 +104,16 @@ export interface LegacyCameraSnapshot {
   shakeY?: number;
 }
 
+export interface LegacyTargetingSnapshot {
+  lock: number;
+  lockTime: number;
+  lockRange: number;
+  lockCone: number;
+  gunRange: number;
+  gunCone: number;
+  altitudeWindow: number;
+}
+
 export interface LegacySnapshot {
   player: LegacyPlayerSnapshot;
   enemies: LegacyEntitySnapshot[];
@@ -117,6 +127,8 @@ export interface LegacySnapshot {
   gameTime: number;
   lockTargetId?: LegacyEntityId | null;
   tacticalVisible?: boolean;
+  combatMode?: 'auto-gun-active-missile' | 'manual-gun-active-missile';
+  targeting?: LegacyTargetingSnapshot;
 }
 
 export interface RenderViewport {

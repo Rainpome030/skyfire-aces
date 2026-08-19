@@ -5,6 +5,43 @@
   const readonlyCache = new WeakMap();
   let worldRenderer = null;
   let rendererFailureReported = false;
+  const V2_AUTO_GUN = true;
+
+  function angleDelta(from, to) {
+    let delta = (to - from) % (Math.PI * 2);
+    if (delta > Math.PI) delta -= Math.PI * 2;
+    if (delta < -Math.PI) delta += Math.PI * 2;
+    return delta;
+  }
+
+  function autoGunTarget() {
+    const range = 820;
+    const cone = 0.5;
+    let best = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+    for (const enemy of enemies) {
+      if (!enemy || enemy.dead || enemy.retreat || enemy.hp <= 0) continue;
+      const dx = enemy.x - player.x;
+      const dy = enemy.y - player.y;
+      const distance = Math.hypot(dx, dy);
+      if (distance > range) continue;
+      const angle = angleDelta(player.heading, Math.atan2(dy, dx));
+      if (Math.abs(angle) > cone) continue;
+      const score = distance * (1 + Math.abs(angle) * 2);
+      if (score < bestScore) {
+        bestScore = score;
+        best = enemy;
+      }
+    }
+    return best;
+  }
+
+  function runV2AutoGun() {
+    if (!V2_AUTO_GUN || GAME.state !== 'playing' || upgradeChoice ||
+      (typeof ChapterCard !== 'undefined' && ChapterCard.isActive()) ||
+      !player.alive || player.fireCd > 0 || typeof firePlayerGuns !== 'function') return;
+    if (autoGunTarget()) firePlayerGuns();
+  }
 
   function readonly(value) {
     if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return value;
@@ -57,6 +94,16 @@
       cameraMode: save && save.cameraMode === CAMERA_WORLD_UP ? 'world-up' : 'heading-up',
       lockTargetId: player.target && player.target.id !== undefined ? player.target.id : null,
       tacticalVisible,
+      combatMode: V2_AUTO_GUN ? 'auto-gun-active-missile' : 'manual-gun-active-missile',
+      targeting: Object.freeze({
+        lock: Number.isFinite(player.lock) ? player.lock : 0,
+        lockTime: Number.isFinite(CFG.lockTime) ? CFG.lockTime : 0.85,
+        lockRange: Number.isFinite(CFG.lockRange) ? CFG.lockRange : 1000,
+        lockCone: Number.isFinite(CFG.lockCone) ? CFG.lockCone : 0.75,
+        gunRange: 820,
+        gunCone: 0.5,
+        altitudeWindow: Number.POSITIVE_INFINITY
+      }),
       gameTime
     });
   }
@@ -72,6 +119,7 @@
   }
 
   function drawBridgedWorld() {
+    runV2AutoGun();
     const renderer = worldRenderer;
     if (isRendererReady(renderer)) {
       try {

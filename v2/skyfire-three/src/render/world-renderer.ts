@@ -6,6 +6,13 @@ import {
   createLockMarker
 } from './procedural-assets';
 import { RibbonTrail } from './ribbon-trail';
+import {
+  DEFAULT_TARGETING_CONFIG,
+  evaluateTarget,
+  normalizedLockProgress,
+  type ShooterSnapshot,
+  type TargetableSnapshot
+} from '../core/targeting';
 import type {
   LegacyEntityId,
   LegacyEntitySnapshot,
@@ -256,11 +263,13 @@ export class SkyfireWorldRenderer {
     this.disposeGroupChildren(this.worldGroup);
     this.worldGroup.clear();
     const ocean = new THREE.Mesh(
-      new THREE.PlaneGeometry(Math.max(100, world.W * WORLD_SCALE * 1.2), Math.max(100, world.H * WORLD_SCALE * 1.2)),
+      // Extend the water beyond the legacy map bounds so the tactical camera
+      // never reveals a hard rectangular edge while looking toward the horizon.
+      new THREE.PlaneGeometry(Math.max(1000, world.W * WORLD_SCALE * 4), Math.max(1000, world.H * WORLD_SCALE * 4)),
       new THREE.MeshStandardMaterial({ color: colorFrom(world.theme?.water, 0x0a4e5c), roughness: 0.88, metalness: 0.08 })
     );
     ocean.rotation.x = -Math.PI / 2;
-    ocean.position.y = -0.08;
+    ocean.position.set(world.W * WORLD_SCALE * 0.5, -0.08, world.H * WORLD_SCALE * 0.5);
     this.worldGroup.add(ocean);
     for (const island of world.islands || []) {
       const points = island.pts?.map((point) => new THREE.Vector2(point.x * WORLD_SCALE, point.y * WORLD_SCALE));
@@ -295,7 +304,7 @@ export class SkyfireWorldRenderer {
       this.worldGroup.add(cluster);
     }
     const grid = new THREE.GridHelper(Math.max(100, Math.max(world.W, world.H) * WORLD_SCALE), 34, 0x3a9aa3, 0x16444c);
-    grid.position.y = 0.02;
+    grid.position.set(world.W * WORLD_SCALE * 0.5, 0.02, world.H * WORLD_SCALE * 0.5);
     for (const material of Array.isArray(grid.material) ? grid.material : [grid.material]) {
       material.transparent = true;
       material.opacity = 0.13;
@@ -391,6 +400,29 @@ export class SkyfireWorldRenderer {
       return;
     }
     const targetPosition = worldPosition(finite(target.x), finite(target.y), finite(target.altitude));
+    // Targeting thresholds are legacy gameplay units. Keep this calculation in
+    // logical coordinates; `worldPosition` is a visual-only scale for Three.
+    const shooter: ShooterSnapshot = {
+      position: { x: finite(snapshot.player.x), y: finite(snapshot.player.altitude), z: finite(snapshot.player.y) },
+      heading: finite(snapshot.player.heading)
+    };
+    const targetable: TargetableSnapshot = {
+      id: target.id,
+      position: { x: finite(target.x), y: finite(target.altitude), z: finite(target.y) },
+      alive: target.alive,
+      dead: target.dead,
+      enemy: true,
+      kind: target.kind
+    };
+    const config = snapshot.targeting || DEFAULT_TARGETING_CONFIG;
+    const evaluation = evaluateTarget(shooter, targetable, config);
+    const progress = normalizedLockProgress(snapshot.targeting?.lock, config.lockTime);
+    const color = progress >= 0.999 && evaluation.gunSolution
+      ? 0x72ff93
+      : progress >= 0.5
+        ? 0xffd166
+        : 0xff6476;
+    this.setLockColor(color);
     this.lockMarker.position.copy(targetPosition);
     const positions = this.lockLine.geometry.getAttribute('position') as THREE.BufferAttribute;
     const playerPosition = worldPosition(snapshot.player.x, snapshot.player.y, snapshot.player.altitude);
@@ -399,7 +431,16 @@ export class SkyfireWorldRenderer {
     positions.needsUpdate = true;
     this.lockLine.geometry.setDrawRange(0, 2);
     this.lockMarker.visible = true;
-    this.lockMarker.scale.setScalar(1 + 0.08 * Math.sin(this.elapsed * 8));
+    this.lockMarker.scale.setScalar(0.78 + progress * 0.32 + 0.08 * Math.sin(this.elapsed * 8));
+  }
+
+  private setLockColor(color: number): void {
+    (this.lockLine.material as THREE.LineBasicMaterial).color.setHex(color);
+    this.lockMarker.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const material = Array.isArray(object.material) ? object.material[0] : object.material;
+      if (material instanceof THREE.MeshBasicMaterial) material.color.setHex(color);
+    });
   }
 
   private updateCamera(snapshot: LegacySnapshot, dt: number): void {
