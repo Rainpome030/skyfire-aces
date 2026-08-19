@@ -7,8 +7,11 @@
 - 开发源码：`src/game/`、`src/styles.css`、`src/index.template.html`
 - 可运行开发版：`outputs/skyfire-aces.html`
 - 稳定发布版：`dist/苍穹之翼-单机空战-v1.6.1.html`
+- Three.js 正式迁移版：`v2/skyfire-three/`（独立开发，不覆盖稳定版）
 
 开发时修改 `src/`，然后运行 `node scripts/build.mjs` 生成单文件开发版。通过试玩和回归检查后，再更新 `dist/` 中的发布文件。
+
+Three.js 迁移版会在启动时复用现有完整玩法状态，并将战斗世界交给三维渲染器；迁移边界和阶段门槛见 `v2/MIGRATION.md`。
 
 ## 运行
 
