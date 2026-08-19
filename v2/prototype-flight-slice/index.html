@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#061923" />
+    <title>苍穹之翼 · 海隙猎场</title>
+  </head>
+  <body>
+    <main id="app">
+      <div id="game-root" aria-label="Three.js 俯视角飞行切片"></div>
+      <div id="vignette" aria-hidden="true"></div>
+      <div id="altitude-scan" aria-hidden="true"></div>
+      <div id="damage-flash" aria-hidden="true"></div>
+
+      <section class="command-rail glass" aria-label="任务信息">
+        <div class="command-topline">
+          <span>SKYFIRE // DATALINK 07</span>
+          <strong id="timer">03:30</strong>
+        </div>
+        <div class="mission-line">
+          <span id="phase-index">01</span>
+          <div>
+            <h1 id="phase-label">阶段 01 / 低空突入</h1>
+            <p id="objective">低空摧毁海岛雷达与防空阵地</p>
+          </div>
+        </div>
+        <div class="phase-pips" aria-label="任务阶段">
+          <i data-phase="0"></i><i data-phase="1"></i><i data-phase="2"></i>
+        </div>
+      </section>
+
+      <section class="telemetry glass" aria-label="飞行状态">
+        <div class="telemetry-heading">
+          <span>FLIGHT STATE</span>
+          <strong id="altitude-mode">低空</strong>
+        </div>
+        <div class="altitude-track"><i id="altitude-fill"></i></div>
+        <div class="telemetry-grid">
+          <div><span>ALT</span><strong id="altitude">008</strong></div>
+          <div><span>SPD</span><strong id="speed">044</strong></div>
+          <div><span>HP</span><strong id="hp">100</strong></div>
+          <div><span>SCORE</span><strong id="score">00000</strong></div>
+        </div>
+      </section>
+
+      <div id="threat-banner" class="threat-banner" role="status">低空航路开放</div>
+      <div id="combat-toast" class="combat-toast" role="status"></div>
+      <div id="target-cue" class="target-cue" aria-label="最近目标方向">
+        <i id="target-arrow" aria-hidden="true">↑</i>
+        <span><b id="target-name">雷达站</b><small><em id="target-range">000</em> M</small></span>
+      </div>
+
+      <aside class="altitude-legend" aria-label="高度关系">
+        <span class="high">HIGH · 空中目标</span>
+        <i></i>
+        <span class="cloud">CLOUD 20</span>
+        <i></i>
+        <span class="low">LOW · 地面目标</span>
+      </aside>
+
+      <section class="controls-help glass" aria-label="键盘操作说明">
+        <span><kbd>A</kbd><kbd>D</kbd> 转向</span>
+        <span><kbd>Space</kbd> 高度</span>
+        <span><kbd>E</kbd> 导弹</span>
+        <span><kbd>R</kbd> 重开</span>
+      </section>
+
+      <div class="touch-hint" aria-hidden="true"><span>按住战场左右侧转向</span></div>
+      <div class="touch-controls" aria-label="触屏控制">
+        <button id="altitude-control" type="button" aria-label="切换高度">
+          <span>ALTITUDE</span>
+          <strong id="altitude-control-label">拉升</strong>
+          <small>切换威胁层</small>
+        </button>
+        <button id="missile-control" type="button" aria-label="发射导弹">
+          <span>MISSILE</span>
+          <strong id="missile-control-label">就绪</strong>
+          <small>需保持锁定</small>
+        </button>
+      </div>
+
+      <section id="briefing-overlay" class="modal-layer" aria-label="任务简报">
+        <div class="briefing-panel glass">
+          <div class="briefing-kicker">TACTICAL DEMONSTRATION // THREE.JS</div>
+          <h2>海隙猎场</h2>
+          <p class="briefing-lead">只用转向、高度切换和一枚主动武器，在同一片海域完成一次地空转换演习。</p>
+          <ol class="briefing-phases">
+            <li><b>01</b><span><strong>低空突入</strong><small>贴海切断雷达与防空火控</small></span></li>
+            <li><b>02</b><span><strong>高空拦截</strong><small>拉升进入双机编队的射击层</small></span></li>
+            <li><b>03</b><span><strong>交叉猎场</strong><small>在地面阵地与王牌之间主动选层</small></span></li>
+          </ol>
+          <div class="briefing-controls">
+            <span>战机自动前进、自动机炮</span>
+            <span>手机按住战场左右侧转向</span>
+          </div>
+          <button id="start-button" type="button" disabled><span id="start-status">正在装载战术模型…</span><strong>开始演习</strong></button>
+          <p id="load-error" class="load-error" role="alert"></p>
+          <details class="credits">
+            <summary>模型鸣谢与许可</summary>
+            <p>主机模型 <a href="https://poly.pizza/m/1fi8ZIDdFCP" target="_blank" rel="noreferrer">Low poly Fighter</a>，作者 Stephen Graybill，采用 <a href="https://creativecommons.org/licenses/by/3.0/" target="_blank" rel="noreferrer">CC BY 3.0</a>；已重命名、缩放、居中、改色并添加细节。敌机与设施来自 <a href="https://kenney.nl/assets/space-kit" target="_blank" rel="noreferrer">Kenney Space Kit</a>（CC0）。<a href="/THIRD_PARTY_ASSETS.md" target="_blank">完整资产记录</a>随页面一同发布。</p>
+          </details>
+        </div>
+      </section>
+
+      <section id="summary-overlay" class="modal-layer hidden" aria-label="任务结算">
+        <div class="summary-panel glass">
+          <div class="briefing-kicker">AFTER ACTION REPORT</div>
+          <h2 id="summary-title">演习完成</h2>
+          <p id="summary-subtitle">地空威胁均已解除</p>
+          <div class="summary-score"><span>SCORE</span><strong id="summary-score">00000</strong></div>
+          <dl class="summary-grid">
+            <div><dt>摧毁目标</dt><dd id="summary-kills">0</dd></div>
+            <div><dt>高度切换</dt><dd id="summary-switches">0</dd></div>
+            <div><dt>导弹命中</dt><dd id="summary-missiles">0/0</dd></div>
+            <div><dt>承受伤害</dt><dd id="summary-damage">0</dd></div>
+            <div><dt>救援复位</dt><dd id="summary-recoveries">0</dd></div>
+            <div><dt>剩余时间</dt><dd id="summary-time">0s</dd></div>
+          </dl>
+          <button id="restart-button" type="button">再次演习</button>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
