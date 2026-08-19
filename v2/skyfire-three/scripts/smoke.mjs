@@ -227,6 +227,41 @@ class CdpBrowser {
     await sleep(120);
   }
 
+  async swipe(x1, y1, x2, y2, id = 1) {
+    await this.send('Input.dispatchTouchEvent', {
+      type: 'touchStart',
+      touchPoints: [{ x: x1, y: y1, id, radiusX: 1, radiusY: 1, force: 1 }]
+    });
+    await this.send('Input.dispatchTouchEvent', {
+      type: 'touchMove',
+      touchPoints: [{ x: x2, y: y2, id, radiusX: 1, radiusY: 1, force: 1 }]
+    });
+    await sleep(180);
+    await this.send('Input.dispatchTouchEvent', {
+      type: 'touchEnd',
+      touchPoints: []
+    });
+    await sleep(180);
+  }
+
+  async touchStart(x, y, id = 1) {
+    await this.send('Input.dispatchTouchEvent', {
+      type: 'touchStart',
+      touchPoints: [{ x, y, id, radiusX: 1, radiusY: 1, force: 1 }]
+    });
+  }
+
+  async touchMove(x, y, id = 1) {
+    await this.send('Input.dispatchTouchEvent', {
+      type: 'touchMove',
+      touchPoints: [{ x, y, id, radiusX: 1, radiusY: 1, force: 1 }]
+    });
+  }
+
+  async touchEnd() {
+    await this.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  }
+
   async stop() {
     try { this.socket?.close(); } catch {}
     if (this.process && this.process.exitCode === null) {
@@ -317,6 +352,10 @@ async function runViewport(config, pageUrl, executable) {
     })()`);
     await browser.waitFor(`GAME.state === 'playing'`);
     await browser.waitFor(`!transition.active`);
+    await browser.evaluate(`(() => {
+      if (typeof ChapterCard !== 'undefined' && ChapterCard.isActive()) ChapterCard.skip();
+      return true;
+    })()`);
     if (await browser.evaluate(`!!controlSchemeAsk`)) {
       await browser.click(`(() => {
         const button = controlSchemeAskLayout().buttons[0];
@@ -324,7 +363,6 @@ async function runViewport(config, pageUrl, executable) {
       })()`);
     }
     await browser.evaluate(`(() => {
-      if (typeof ChapterCard !== 'undefined' && ChapterCard.isActive()) ChapterCard.skip();
       // The smoke gate should test the battlefield, not wait through the
       // first campaign spawn timer. Advance that deterministic timer once.
       if (mission && typeof updateMissionSpawn === 'function') {
@@ -366,6 +404,54 @@ async function runViewport(config, pageUrl, executable) {
       check(`${config.name} real touch activates portrait controls`,
         touchState.isTouch && touchState.portraitHud && touchState.state === 'playing',
         JSON.stringify(touchState));
+
+      const controls = await browser.evaluate(`(() => {
+        const hud = hudRects();
+        return {
+          throttle: { x: hud.throttle.x + hud.throttle.w / 2, y: hud.throttle.y + hud.throttle.h * 0.12 },
+          missile: { x: hud.msl.x + hud.msl.w / 2, y: hud.msl.y + hud.msl.h / 2 },
+          pause: { x: hud.pauseBtn.x + hud.pauseBtn.w / 2, y: hud.pauseBtn.y + hud.pauseBtn.h / 2 },
+          swipeY: Math.max(160, Math.min(innerHeight - 220, innerHeight * 0.45))
+        };
+      })()`);
+      await browser.touch(controls.throttle.x, controls.throttle.y);
+      const throttle = await browser.evaluate('player.throttle');
+      check(`${config.name} touch throttle reaches upper range`, throttle > 0.75, String(throttle));
+
+      await browser.touch(controls.missile.x, controls.missile.y);
+      const missileOn = await browser.evaluate('input.missileAuto === true');
+      check(`${config.name} touch missile switch toggles ON`, missileOn, String(missileOn));
+
+      const headingBeforeSwipe = await browser.evaluate('player.heading');
+      await browser.touchStart(config.width * 0.28, controls.swipeY, 77);
+      await sleep(80);
+      await browser.touchMove(config.width * 0.72, controls.swipeY, 77);
+      await sleep(180);
+      const gestureState = await browser.evaluate(`({
+        id: input.touch.swipeId,
+        active: touchSwipe.active,
+        dir: touchSwipe.dir,
+        strength: touchSwipe.strength,
+        state: GAME.state
+      })`);
+      await browser.touchEnd();
+      await sleep(120);
+      const headingAfterSwipe = await browser.evaluate('player.heading');
+      const swipeDelta = await browser.evaluate(`(() => {
+        let delta = (player.heading - ${headingBeforeSwipe}) % (Math.PI * 2);
+        if (delta > Math.PI) delta -= Math.PI * 2;
+        if (delta < -Math.PI) delta += Math.PI * 2;
+        return Math.abs(delta);
+      })()`);
+      check(`${config.name} horizontal touch swipe changes heading`,
+        swipeDelta > 1e-5 && gestureState.active === true && gestureState.dir === 'right',
+        JSON.stringify({ headingBeforeSwipe, headingAfterSwipe, swipeDelta, gestureState }));
+
+      await browser.touch(controls.pause.x, controls.pause.y);
+      const paused = await browser.evaluate('GAME.state === "paused"');
+      check(`${config.name} touch pause enters paused state`, paused, String(paused));
+      await browser.evaluate('requestResume()');
+      check(`${config.name} pause path resumes`, await browser.evaluate('GAME.state === "playing"'), String(await browser.evaluate('GAME.state')));
     }
     check(`${config.name} console has no errors`, browser.consoleErrors.length === 0,
       browser.consoleErrors.join(' || '));

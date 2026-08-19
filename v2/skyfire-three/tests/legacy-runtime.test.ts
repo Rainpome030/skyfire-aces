@@ -205,6 +205,78 @@ describe('formal v2 legacy runtime contract', () => {
     expect(result).toEqual({ actions: ['added', 'added', 'boosted'], count: 2, repaired: true, boosted: true });
   });
 
+  it('keeps fighter movement aligned with its updated nose and target approach', () => {
+    const result = runtime.evaluate<Record<string, number | boolean>>(`(() => {
+      GAME.state = 'playing';
+      world = { W: 5000, H: 5000, clouds: [], islands: [], seed: 1, theme: THEMES.day };
+      player.x = 3500; player.y = 2500; player.alive = true; player.dead = false;
+      mission = { escort: false, transport: null, complete: false, failed: false };
+      allies = [];
+      const enemy = makeEnemy('fighter', 1000, 2500);
+      enemy.heading = 0;
+      enemy.speed = 220;
+      enemy.maxSpeed = 220;
+      enemies = [enemy];
+      const before = { x: enemy.x, y: enemy.y };
+      let headingAligned = true;
+      for (let frame = 0; frame < 20; frame += 1) {
+        const x0 = enemy.x;
+        const y0 = enemy.y;
+        updateEnemy(enemy, 0.1);
+        const dx = enemy.x - x0;
+        const dy = enemy.y - y0;
+        if (Math.hypot(dx, dy) > 1e-8) {
+          headingAligned = headingAligned && Math.abs(angDiff(enemy.heading, Math.atan2(dy, dx))) < 1e-9;
+        }
+      }
+      const targetDistanceBefore = Math.hypot(player.x - before.x, player.y - before.y);
+      const targetDistanceAfter = Math.hypot(player.x - enemy.x, player.y - enemy.y);
+      return {
+        headingAligned,
+        moved: Math.hypot(enemy.x - before.x, enemy.y - before.y) > 0,
+        approached: targetDistanceAfter < targetDistanceBefore,
+        heading: enemy.heading,
+        targetDistanceBefore,
+        targetDistanceAfter
+      };
+    })()`);
+    expect(result.headingAligned).toBe(true);
+    expect(result.moved).toBe(true);
+    expect(result.approached).toBe(true);
+  });
+
+  it('dispatches special enemy behavior without reversing the movement contract', () => {
+    const result = runtime.evaluate<Record<string, boolean | number>>(`(() => {
+      GAME.state = 'playing';
+      world = { W: 5000, H: 5000, clouds: [], islands: [], seed: 2, theme: THEMES.day };
+      player.x = 2500; player.y = 2500; player.alive = true; player.dead = false;
+      mission = { escort: false, transport: null, complete: false, failed: false };
+      allies = [];
+      const enemy = makeEnemy('interceptor', 1400, 2500);
+      enemy.heading = Math.PI;
+      enemy.speed = 240;
+      enemy.maxSpeed = 240;
+      enemies = [enemy];
+      const before = { x: enemy.x, y: enemy.y, heading: enemy.heading };
+      updateEnemy(enemy, 0.1);
+      const dx = enemy.x - before.x;
+      const dy = enemy.y - before.y;
+      const movementLength = Math.hypot(dx, dy);
+      const movedHeading = Math.atan2(dy, dx);
+      return {
+        dispatched: enemy.kind === 'interceptor',
+        moved: movementLength > 0,
+        headingAligned: Math.abs(angDiff(enemy.heading, movedHeading)) < 1e-9,
+        headingChanged: Math.abs(angDiff(before.heading, enemy.heading)) > 1e-6,
+        movementLength
+      };
+    })()`);
+    expect(result.dispatched).toBe(true);
+    expect(result.moved).toBe(true);
+    expect(result.headingAligned).toBe(true);
+    expect(result.headingChanged).toBe(true);
+  });
+
   it('loads and saves camera-compatible v1 storage and preserves mouse bindings', () => {
     runtime.storage.set('skyfire_save_v1', JSON.stringify({ cameraMode: 'world-up', selectedPlane: 'gale', difficulty: 'normal' }));
     runtime.storage.set('skyfire_keybinds', JSON.stringify({ gun: 'mouse3' }));
