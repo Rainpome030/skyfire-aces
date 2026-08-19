@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isGroundTargetKind, visualAltitude } from '../src/core/altitude';
+import { aircraftVisualScale, isGroundTargetKind, visualAltitude } from '../src/core/altitude';
 
 describe('legacy entity visual altitude adapter', () => {
   it('keeps explicit altitude values authoritative', () => {
@@ -19,5 +19,12 @@ describe('legacy entity visual altitude adapter', () => {
     expect(first).toBeGreaterThan(5000);
     expect(visualAltitude({ kind: 'bomber', id: 7 })).toBeLessThan(first);
   });
-});
 
+  it('turns altitude into a bounded aircraft size cue', () => {
+    expect(aircraftVisualScale(0)).toBeCloseTo(0.72);
+    expect(aircraftVisualScale(3500)).toBeCloseTo(1);
+    expect(aircraftVisualScale(7000)).toBeCloseTo(1.28);
+    expect(aircraftVisualScale(99999)).toBeCloseTo(1.28);
+    expect(aircraftVisualScale(undefined)).toBeCloseTo(1);
+  });
+});

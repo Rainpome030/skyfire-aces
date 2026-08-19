@@ -262,6 +262,13 @@ class CdpBrowser {
     await this.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   }
 
+  async key(code, key = code) {
+    await this.send('Input.dispatchKeyEvent', { type: 'keyDown', code, key });
+    await sleep(180);
+    await this.send('Input.dispatchKeyEvent', { type: 'keyUp', code, key });
+    await sleep(120);
+  }
+
   async stop() {
     try { this.socket?.close(); } catch {}
     if (this.process && this.process.exitCode === null) {
@@ -325,7 +332,6 @@ async function runViewport(config, pageUrl, executable) {
       JSON.stringify(startup));
     check(`${config.name} renderer reports ready/fallback`, ['ready', 'fallback'].includes(startup.marker), startup.marker);
     check(`${config.name} creates Three canvas`, startup.threeCanvas, String(startup.threeCanvas));
-
     let layout = await browser.evaluate(OVERFLOW_PROBE);
     check(`${config.name} title has no page overflow`, !layout.overflowX && !layout.overflowY, JSON.stringify(layout));
 
@@ -389,11 +395,28 @@ async function runViewport(config, pageUrl, executable) {
     })()`);
     check(`${config.name} briefing -> battlefield`, battlefield.state === 'playing' && battlefield.missionIndex === 0 && battlefield.playerAlive && battlefield.enemies > 0,
       JSON.stringify(battlefield));
+    const battlefieldPixels = await browser.evaluate(`(() => {
+      const canvas = document.querySelector('#three-root canvas');
+      if (!canvas || canvas.width < 2 || canvas.height < 2) return { ready: false, nonBlank: false };
+      const encoded = canvas.toDataURL('image/png');
+      return { ready: true, nonBlank: encoded.length > 2000, dataLength: encoded.length, width: canvas.width, height: canvas.height };
+    })()`);
+    check(`${config.name} battlefield Three canvas has rendered pixels`, battlefieldPixels.ready && battlefieldPixels.nonBlank, JSON.stringify(battlefieldPixels));
 
     layout = await browser.evaluate(OVERFLOW_PROBE);
     check(`${config.name} battlefield has no page overflow`, !layout.overflowX && !layout.overflowY, JSON.stringify(layout));
     check(`${config.name} viewport is exact`, layout.viewport.width === config.width && layout.viewport.height === config.height,
       JSON.stringify(layout.viewport));
+    if (!config.mobile) {
+      const headingBeforeKey = await browser.evaluate('player.heading');
+      await browser.key('KeyD', 'd');
+      const headingAfterKey = await browser.evaluate('player.heading');
+      let keyDelta = (headingAfterKey - headingBeforeKey) % (Math.PI * 2);
+      if (keyDelta > Math.PI) keyDelta -= Math.PI * 2;
+      if (keyDelta < -Math.PI) keyDelta += Math.PI * 2;
+      check(`${config.name} keyboard D turns right`, keyDelta > 1e-5,
+        JSON.stringify({ headingBeforeKey, headingAfterKey, keyDelta }));
+    }
     if (config.mobile) {
       await browser.touch(config.width / 2, config.height / 2);
       const touchState = await browser.evaluate(`({

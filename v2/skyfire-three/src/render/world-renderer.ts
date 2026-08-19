@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { isGroundTargetKind, visualAltitude } from '../core/altitude';
+import { aircraftVisualScale, isGroundTargetKind, visualAltitude } from '../core/altitude';
 import {
   createAircraft,
   createAircraftShadow,
@@ -36,6 +36,7 @@ interface UnitView {
   shadow: THREE.Mesh;
   trail?: RibbonTrail;
   kind: string;
+  baseScale: number;
   active: boolean;
 }
 
@@ -192,7 +193,7 @@ export class SkyfireWorldRenderer {
       ? new RibbonTrail(role === 'enemy' ? 0xff5669 : role === 'ally' ? 0x6dffd0 : 0x63dfff)
       : undefined;
     if (trail) this.scene.add(trail.object);
-    return { root, shadow, trail, kind, active: false };
+    return { root, shadow, trail, kind, baseScale: root.scale.x, active: false };
   }
 
   private syncPlayer(snapshot: LegacySnapshot): void {
@@ -201,6 +202,7 @@ export class SkyfireWorldRenderer {
     this.player.root.visible = player.alive !== false;
     this.player.shadow.visible = player.alive !== false;
     this.player.root.position.copy(position);
+    this.player.root.scale.setScalar(this.player.baseScale * aircraftVisualScale(player.altitude));
     // Three positive Y rotation maps +X toward -Z, hence the negative sign.
     this.player.root.rotation.set(0, -finite(player.heading), finite(player.bank) * 0.72, 'YXZ');
     this.player.shadow.position.set(position.x, GROUND_Y + 0.025, position.z);
@@ -235,6 +237,7 @@ export class SkyfireWorldRenderer {
       const altitude = visualAltitude(entity);
       const ground = isGroundTargetKind(kind);
       const scale = ground ? 1 : 1 + altitude / 4000;
+      if (!ground) view.root.scale.setScalar(view.baseScale * aircraftVisualScale(altitude));
       view.shadow.scale.set(scale, scale * 0.78, scale);
       if (view.trail) view.trail.update(position, this.elapsed);
     });

@@ -193,6 +193,29 @@ describe('formal v2 legacy runtime contract', () => {
     expect(result).toEqual({ wave5: 0, wave6: [5], wave11: [5, 5], elites6: 1, elites11: 2 });
   });
 
+  it('keeps all campaign tasks, boss variants, and objective hooks available', () => {
+    const result = runtime.evaluate<Record<string, unknown>>(`(() => ({
+      count: MISSION_DEFS.length,
+      types: MISSION_DEFS.map(def => def.type),
+      bossKinds: MISSION_DEFS.filter(def => def.boss).map(def => def.bossKind || 'ace'),
+      chapters: MISSION_DEFS.map(def => def.chapter),
+      escortCounts: MISSION_DEFS.filter(def => def.escort).map(def => def.escortCount || 1),
+      raceCheckpoints: MISSION_DEFS.find(def => def.type === 'race').checkpoints.length,
+      timedTargets: MISSION_DEFS.find(def => def.type === 'intercept').targetKills,
+      surviveDuration: MISSION_DEFS.find(def => def.type === 'survive').duration
+    }))()`);
+    expect(result).toEqual({
+      count: 9,
+      types: ['clear', 'escort', 'boss', 'intercept', 'survive', 'boss', 'race', 'escort', 'boss'],
+      bossKinds: ['ace', 'eye', 'king'],
+      chapters: [1, 1, 1, 2, 2, 2, 3, 3, 3],
+      escortCounts: [1, 2],
+      raceCheckpoints: 5,
+      timedTargets: 14,
+      surviveDuration: 90
+    });
+  });
+
   it('retains wingman summon, repair, and fire-rate boost behavior', () => {
     const result = runtime.evaluate<Record<string, unknown>>(`(() => {
       allies = []; player.x = 1000; player.y = 1000; player.heading = 0; player.speed = 200;

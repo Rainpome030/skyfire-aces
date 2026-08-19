@@ -29,6 +29,17 @@ function finite(value: number | undefined): value is number {
   return Number.isFinite(value);
 }
 
+/**
+ * Convert logical altitude into a restrained aircraft size cue.
+ * Sea-level aircraft are 72% scale, the 3500m baseline is unchanged, and
+ * high-altitude aircraft top out at 128% scale.
+ */
+export function aircraftVisualScale(altitude: number | undefined): number {
+  const safeAltitude = finite(altitude) ? Math.max(0, altitude) : 3500;
+  const normalized = Math.min(2, safeAltitude / 3500);
+  return 0.72 + normalized * 0.28;
+}
+
 export function isGroundTargetKind(kind: string | undefined): boolean {
   return /aa|turret|radar|sam|bunker|ground|base|tower/i.test(String(kind || ''));
 }
@@ -48,4 +59,3 @@ export function visualAltitude(entity: AltitudeEntity): number {
   const kind = String(entity.kind || 'fighter').toLowerCase();
   return Math.max(0, (AIR_ALTITUDE[kind] ?? AIR_ALTITUDE.fighter) + stableOffset(entity.id));
 }
-
