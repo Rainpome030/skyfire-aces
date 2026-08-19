@@ -84,30 +84,64 @@ function drawAchievements() {
 
 // 选关布局:3 个章节分组,每组 1 行 × 3 卡片
 function selectLayout() {
-  const cardW = Math.min(280, Math.max(150, W * 0.24));
-  const cardH = Math.min(150, Math.max(104, H * 0.17));
-  const gapX = Math.min(24, (W - cardW * 3) / 4);
-  const gridW = cardW * 3 + gapX * 2;
+  const portrait = W < H || W <= 520;
+  if (!portrait) {
+    const cardW = Math.min(280, Math.max(150, W * 0.24));
+    const cardH = Math.min(150, Math.max(104, H * 0.17));
+    const gapX = Math.min(24, (W - cardW * 3) / 4);
+    const gridW = cardW * 3 + gapX * 2;
+    const startX = W / 2 - gridW / 2;
+    const labelH = 30;
+    const groupGap = Math.min(34, H * 0.045);
+    const startY = H * 0.15;
+    const groups = [];
+    for (let i = 0; i < 3; i++) groups.push({ y: startY + i * (labelH + cardH + groupGap) });
+    return { portrait, columns: 3, rowsPerGroup: 1, rowGap: 0, cardW, cardH, gapX, gridW, startX, labelH, groupGap, startY, groups };
+  }
+
+  // Two columns keep the nine missions readable on a one-handed portrait
+  // screen. The available height is measured against the footer button so the
+  // last row never hides behind "返回标题" on short phones.
+  const columns = 2;
+  const rowsPerGroup = 2;
+  const sidePad = Math.max(12, W * 0.045);
+  const gapX = 10;
+  const cardW = Math.max(124, (W - sidePad * 2 - gapX) / columns);
+  const cardHMax = 94;
+  const labelH = 24;
+  const rowGap = 8;
+  const groupGap = 10;
+  const startY = Math.max(78, H * 0.12);
+  const footerTop = menuButtons.length
+    ? Math.min(...menuButtons.map((button) => button.y))
+    : H * 0.9;
+  const contentBottom = footerTop - 16;
+  const fixedHeight = 3 * labelH + 3 * rowGap + 2 * groupGap;
+  const cardH = Math.max(52, Math.min(cardHMax, (contentBottom - startY - fixedHeight) / 6));
+  const gridW = cardW * columns + gapX * (columns - 1);
   const startX = W / 2 - gridW / 2;
-  const labelH = 30;
-  const groupGap = Math.min(34, H * 0.045);
-  const startY = H * 0.15;
+  const groupHeight = labelH + rowsPerGroup * cardH + rowGap + groupGap;
   const groups = [];
-  for (let i = 0; i < 3; i++) groups.push({ y: startY + i * (labelH + cardH + groupGap) });
-  return { cardW, cardH, gapX, gridW, startX, labelH, groupGap, startY, groups };
+  for (let i = 0; i < 3; i++) groups.push({ y: startY + i * groupHeight });
+  return { portrait, columns, rowsPerGroup, rowGap, cardW, cardH, gapX, gridW, startX, labelH, groupGap, startY, groups };
 }
 
 // (x, y) → 关卡下标(0..8);未命中返回 -1
 function selectCardAt(x, y) {
   const L = selectLayout();
   for (let g = 0; g < L.groups.length; g++) {
-    const rowY = L.groups[g].y + L.labelH;
+    const localY = y - (L.groups[g].y + L.labelH);
+    const row = Math.floor(localY / (L.cardH + L.rowGap));
+    if (row < 0 || row >= L.rowsPerGroup) continue;
+    const rowY = L.groups[g].y + L.labelH + row * (L.cardH + L.rowGap);
     if (y < rowY || y > rowY + L.cardH) continue;
     const col = Math.floor((x - L.startX) / (L.cardW + L.gapX));
-    if (col < 0 || col > 2) return -1;
+    if (col < 0 || col >= L.columns) return -1;
     const cx = L.startX + col * (L.cardW + L.gapX);
     if (x < cx || x > cx + L.cardW) return -1;
-    return g * 3 + col;
+    const missionOffset = row * L.columns + col;
+    if (missionOffset >= 3) return -1;
+    return g * 3 + missionOffset < MISSION_DEFS.length ? g * 3 + missionOffset : -1;
   }
   return -1;
 }
@@ -130,14 +164,20 @@ function drawSelect() {
   ctx.fillText('战役共 ' + MISSION_DEFS.length + ' 关 · 已解锁 ' + save.unlockedMissions + ' 关', W / 2, H * 0.08 + 28);
 
   const L = selectLayout();
-  const nameFont = Math.round(Math.min(17, L.cardW * 0.06));
-  const smallFont = Math.round(Math.min(12, L.cardW * 0.045));
+  const nameFont = L.portrait
+    ? Math.round(Math.min(16, Math.max(10, L.cardW * 0.065)))
+    : Math.round(Math.min(17, L.cardW * 0.06));
+  const smallFont = L.portrait
+    ? Math.round(Math.min(10, Math.max(8, L.cardW * 0.045)))
+    : Math.round(Math.min(12, L.cardW * 0.045));
   for (let i = 0; i < MISSION_DEFS.length; i++) {
     const def = MISSION_DEFS[i];
     const gIdx = Math.floor(i / 3);
-    const col = i % 3;
+    const localIndex = i % 3;
+    const row = Math.floor(localIndex / L.columns);
+    const col = localIndex % L.columns;
     const x = L.startX + col * (L.cardW + L.gapX);
-    const y = L.groups[gIdx].y + L.labelH;
+    const y = L.groups[gIdx].y + L.labelH + row * (L.cardH + L.rowGap);
     const unlocked = def.index <= save.unlockedMissions;
     const rank = (save.bestRank && save.bestRank[def.index - 1]) || null;
     ctx.fillStyle = unlocked ? 'rgba(14,32,52,0.92)' : 'rgba(9,16,26,0.78)';
@@ -148,28 +188,30 @@ function drawSelect() {
     ctx.textAlign = 'center';
     ctx.fillStyle = unlocked ? '#ffffff' : 'rgba(170,185,200,0.55)';
     ctx.font = '800 ' + nameFont + 'px "Microsoft YaHei", sans-serif';
-    ctx.fillText(def.name, x + L.cardW / 2, y + 32);
+    ctx.fillText(def.name, x + L.cardW / 2, y + (L.portrait ? 22 : 32));
     const tlabel = MISSION_TYPE_LABELS[def.type] || String(def.type);
     ctx.fillStyle = unlocked ? 'rgba(70,150,200,0.35)' : 'rgba(80,95,110,0.7)';
     ctx.strokeStyle = unlocked ? 'rgba(127,212,255,0.6)' : 'rgba(120,140,160,0.3)';
     ctx.lineWidth = 1;
     const tagW = Math.min(72, L.cardW - 24);
-    roundRect(x + L.cardW / 2 - tagW / 2, y + 42, tagW, 20, 10);
+    const tagY = y + (L.portrait ? 29 : 42);
+    const tagH = L.portrait ? 17 : 20;
+    roundRect(x + L.cardW / 2 - tagW / 2, tagY, tagW, tagH, tagH / 2);
     ctx.fill(); ctx.stroke();
     ctx.fillStyle = unlocked ? '#7fd4ff' : 'rgba(150,165,180,0.55)';
     ctx.font = '600 ' + smallFont + 'px "Microsoft YaHei", sans-serif';
-    ctx.fillText(tlabel, x + L.cardW / 2, y + 42 + 14);
+    ctx.fillText(tlabel, x + L.cardW / 2, tagY + (L.portrait ? 12 : 14));
     ctx.fillStyle = rank ? (RANK_COLORS[rank] || '#aebecd') : 'rgba(150,165,180,0.55)';
     ctx.font = '700 ' + smallFont + 'px "Microsoft YaHei", sans-serif';
-    ctx.fillText('最佳评级 ' + (rank || '-'), x + L.cardW / 2, y + 86);
+    ctx.fillText('最佳评级 ' + (rank || '-'), x + L.cardW / 2, y + (L.portrait ? 57 : 86));
     ctx.fillStyle = unlocked ? 'rgba(125,255,176,0.85)' : 'rgba(255,255,255,0.45)';
     ctx.font = '600 ' + smallFont + 'px "Microsoft YaHei", sans-serif';
-    ctx.fillText(unlocked ? '可出击' : '🔒 通关前一任务解锁', x + L.cardW / 2, y + L.cardH - 14);
+    ctx.fillText(unlocked ? '可出击' : '🔒 通关前一任务解锁', x + L.cardW / 2, y + L.cardH - (L.portrait ? 8 : 14));
   }
   for (let gIdx = 0; gIdx < SELECT_CHAPTERS.length; gIdx++) {
     const ch = SELECT_CHAPTERS[gIdx];
     ctx.fillStyle = '#dfe9f2';
-    ctx.font = '700 ' + Math.round(Math.min(15, W * 0.02)) + 'px "Microsoft YaHei", sans-serif';
+    ctx.font = '700 ' + Math.round(Math.min(L.portrait ? 13 : 15, W * 0.02)) + 'px "Microsoft YaHei", sans-serif';
     ctx.textAlign = 'left';
     ctx.fillText('第 ' + ch.chapter + ' 章 · ' + ch.name, W / 2 - L.gridW / 2, L.groups[gIdx].y + 18);
     ctx.fillStyle = 'rgba(120,180,220,0.4)';
@@ -266,6 +308,7 @@ function drawTitle() {
 
 function drawBriefing() {
   const def = MISSION_DEFS[GAME.missionIndex];
+  const portrait = W < H || W <= 520;
   ctx.fillStyle = 'rgba(5,12,22,0.86)';
   ctx.fillRect(0, 0, W, H);
   const bw = Math.min(620, W * 0.86);
@@ -277,16 +320,18 @@ function drawBriefing() {
   ctx.fill(); ctx.stroke();
   ctx.textAlign = 'center';
   ctx.fillStyle = '#ffd166';
-  ctx.font = '700 ' + Math.round(Math.min(17, W * 0.022)) + 'px "Microsoft YaHei", sans-serif';
+  ctx.font = '700 ' + Math.round(portrait ? 13 : Math.min(17, W * 0.022)) + 'px "Microsoft YaHei", sans-serif';
   ctx.fillText('任务简报', W / 2, by + 40);
   ctx.fillStyle = '#7fd4ff';
-  ctx.font = '600 ' + Math.round(Math.min(14, W * 0.019)) + 'px "Microsoft YaHei", sans-serif';
+  ctx.font = '600 ' + Math.round(portrait ? 11 : Math.min(14, W * 0.019)) + 'px "Microsoft YaHei", sans-serif';
   ctx.fillText(def.code, W / 2, by + 74);
   ctx.fillStyle = '#ffffff';
-  ctx.font = '900 ' + Math.round(Math.min(38, W * 0.055)) + 'px "Microsoft YaHei", sans-serif';
+  ctx.font = '900 ' + Math.round(portrait ? 26 : Math.min(38, W * 0.055)) + 'px "Microsoft YaHei", sans-serif';
   ctx.fillText(def.name, W / 2, by + 122);
   ctx.fillStyle = '#dfe9f2';
-  ctx.font = '500 ' + Math.round(Math.min(15, W * 0.02)) + 'px "Microsoft YaHei", sans-serif';
+  const bodyFont = portrait ? 11 : Math.round(Math.min(15, W * 0.02));
+  const bodyLineGap = portrait ? 22 : 28;
+  ctx.font = '500 ' + bodyFont + 'px "Microsoft YaHei", sans-serif';
   const words = def.brief;
   let line = '';
   let y = by + 168;
@@ -295,24 +340,24 @@ function drawBriefing() {
     const w = ctx.measureText(line).width;
     if (w > bw - 80 && ch !== '，') {
       ctx.fillText(line, W / 2, y);
-      y += 28;
+      y += bodyLineGap;
       line = '';
     }
   }
   ctx.fillText(line, W / 2, y);
   y += 44;
   ctx.fillStyle = '#ffd166';
-  ctx.font = '700 ' + Math.round(Math.min(16, W * 0.021)) + 'px "Microsoft YaHei", sans-serif';
+  ctx.font = '700 ' + Math.round(portrait ? 12 : Math.min(16, W * 0.021)) + 'px "Microsoft YaHei", sans-serif';
   ctx.fillText('任务目标：' + def.objective, W / 2, y);
-  y += 34;
+  y += portrait ? 28 : 34;
   ctx.fillStyle = '#aebecd';
-  ctx.font = '500 ' + Math.round(Math.min(14, W * 0.019)) + 'px "Microsoft YaHei", sans-serif';
+  ctx.font = '500 ' + Math.round(portrait ? 10 : Math.min(14, W * 0.019)) + 'px "Microsoft YaHei", sans-serif';
   ctx.fillText('机体：' + PLANE_DEFS[save.selectedPlane].name + ' ｜ 难度：' + DIFFICULTY_DEFS[save.difficulty].name, W / 2, y);
-  y += 26;
+  y += portrait ? 22 : 26;
   ctx.fillText('载弹：机炮 无限 ｜ 导弹 ×' + player.maxMissiles, W / 2, y);
-  y += 26;
+  y += portrait ? 22 : 26;
   ctx.fillText('空域：' + THEMES[def.theme].name, W / 2, y);
-  y += 26;
+  y += portrait ? 22 : 26;
   ctx.fillText('等级评价由时间、损伤与连击共同决定', W / 2, y);
   const hovered = hoverButton();
   for (const b of menuButtons) drawMenuButton(b, b === hovered);
