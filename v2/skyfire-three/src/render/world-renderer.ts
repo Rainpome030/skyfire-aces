@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { isGroundTargetKind, visualAltitude } from '../core/altitude';
 import {
   createAircraft,
   createAircraftShadow,
@@ -69,10 +70,6 @@ function colorFrom(value: string | undefined, fallback: number): number {
 
 function entityKind(entity: LegacyEntitySnapshot): string {
   return String(entity.kind || 'fighter').toLowerCase();
-}
-
-function isGroundKind(kind: string): boolean {
-  return /aa|turret|radar|sam|bunker|ground|base|tower/.test(kind);
 }
 
 function isAlive(entity: LegacyEntitySnapshot): boolean {
@@ -147,7 +144,7 @@ export class SkyfireWorldRenderer {
     this.syncPlayer(snapshot);
     this.syncUnits(this.allies, snapshot.allies, 'ally');
     this.syncUnits(this.enemies, snapshot.enemies, 'enemy');
-    this.syncProjectiles(snapshot.bullets, snapshot.missiles);
+    this.syncProjectiles(snapshot.bullets, snapshot.missiles, snapshot.player.altitude);
     this.syncParticles(snapshot.particles);
     this.syncLock(snapshot);
     this.updateCamera(snapshot, safeDt);
@@ -166,7 +163,7 @@ export class SkyfireWorldRenderer {
   }
 
   projectEntity(entity: LegacyEntitySnapshot): { x: number; y: number; visible: boolean } {
-    const point = worldPosition(finite(entity.x), finite(entity.y), finite(entity.altitude));
+    const point = worldPosition(finite(entity.x), finite(entity.y), visualAltitude(entity));
     point.project(this.camera);
     const width = Math.max(1, this.renderer.domElement.clientWidth);
     const height = Math.max(1, this.renderer.domElement.clientHeight);
@@ -187,7 +184,7 @@ export class SkyfireWorldRenderer {
   }
 
   private makeUnit(faction: 'player' | 'ally' | 'enemy', kind: string, role: 'player' | 'ally' | 'enemy'): UnitView {
-    const ground = isGroundKind(kind);
+    const ground = isGroundTargetKind(kind);
     const root = ground ? createGroundTarget(kind) : createAircraft(faction, kind);
     const shadow = createAircraftShadow();
     if (ground) shadow.scale.set(1.5, 1.1, 1);
@@ -231,12 +228,12 @@ export class SkyfireWorldRenderer {
       view.root.visible = view.active;
       view.shadow.visible = view.active;
       if (!view.active) return;
-      const position = worldPosition(finite(entity.x), finite(entity.y), finite(entity.altitude));
+      const position = worldPosition(finite(entity.x), finite(entity.y), visualAltitude(entity));
       view.root.position.copy(position);
       view.root.rotation.set(0, -finite(entity.heading), finite(entity.bank) * 0.7, 'YXZ');
       view.shadow.position.set(position.x, GROUND_Y + 0.022, position.z);
-      const altitude = Math.max(0, finite(entity.altitude));
-      const ground = isGroundKind(kind);
+      const altitude = visualAltitude(entity);
+      const ground = isGroundTargetKind(kind);
       const scale = ground ? 1 : 1 + altitude / 4000;
       view.shadow.scale.set(scale, scale * 0.78, scale);
       if (view.trail) view.trail.update(position, this.elapsed);
@@ -332,7 +329,7 @@ export class SkyfireWorldRenderer {
     return { root, beam, head };
   }
 
-  private syncProjectiles(bullets: LegacyProjectileSnapshot[], missiles: LegacyProjectileSnapshot[]): void {
+  private syncProjectiles(bullets: LegacyProjectileSnapshot[], missiles: LegacyProjectileSnapshot[], playerAltitude = 3500): void {
     const all = [...bullets.map((item) => ({ item, missile: false })), ...missiles.map((item) => ({ item, missile: true }))];
     for (let index = 0; index < this.projectilePool.length; index += 1) {
       const view = this.projectilePool[index];
@@ -342,7 +339,8 @@ export class SkyfireWorldRenderer {
         continue;
       }
       const item = entry.item;
-      const point = worldPosition(finite(item.x), finite(item.y), finite(item.altitude, entry.missile ? 3500 : 0));
+      const fallbackAltitude = item.enemy ? 4200 : playerAltitude;
+      const point = worldPosition(finite(item.x), finite(item.y), finite(item.altitude, fallbackAltitude));
       const heading = finite(item.heading, Math.atan2(finite(item.vy), finite(item.vx)));
       const length = entry.missile ? 1.2 : 0.72;
       const direction = new THREE.Vector3(Math.cos(heading), 0, Math.sin(heading));
@@ -399,7 +397,8 @@ export class SkyfireWorldRenderer {
       this.lockLine.visible = false;
       return;
     }
-    const targetPosition = worldPosition(finite(target.x), finite(target.y), finite(target.altitude));
+    const targetAltitude = visualAltitude(target);
+    const targetPosition = worldPosition(finite(target.x), finite(target.y), targetAltitude);
     // Targeting thresholds are legacy gameplay units. Keep this calculation in
     // logical coordinates; `worldPosition` is a visual-only scale for Three.
     const shooter: ShooterSnapshot = {
@@ -408,7 +407,7 @@ export class SkyfireWorldRenderer {
     };
     const targetable: TargetableSnapshot = {
       id: target.id,
-      position: { x: finite(target.x), y: finite(target.altitude), z: finite(target.y) },
+      position: { x: finite(target.x), y: targetAltitude, z: finite(target.y) },
       alive: target.alive,
       dead: target.dead,
       enemy: true,

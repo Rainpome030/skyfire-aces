@@ -1,6 +1,7 @@
 import type { LegacyEntitySnapshot, LegacySnapshot } from '../render/snapshot';
 import type { SkyfireWorldRenderer } from '../render/world-renderer';
 import { normalizedLockProgress } from '../core/targeting';
+import { visualAltitude } from '../core/altitude';
 
 interface TagView {
   root: HTMLDivElement;
@@ -69,7 +70,7 @@ export class TacticalOverlay {
       }
       this.place(tag, entry.enemy, renderer);
       tag.title.textContent = enemyName(entry.enemy.kind);
-      tag.detail.textContent = `RNG ${Math.round(entry.range)}  SPD ${Math.round(finite(entry.enemy.speed))}`;
+      tag.detail.textContent = `RNG ${Math.round(entry.range)}  ALT ${Math.round(visualAltitude(entry.enemy))}  SPD ${Math.round(finite(entry.enemy.speed))}`;
       this.avoidOverlap(tag, placed);
       if (!tag.root.hidden) placed.push(tag.root.getBoundingClientRect());
     });
