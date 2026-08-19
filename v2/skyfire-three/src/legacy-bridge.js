@@ -119,8 +119,8 @@
   }
 
   function drawBridgedWorld() {
-    runV2AutoGun();
     const renderer = worldRenderer;
+    if (isRendererReady(renderer)) runV2AutoGun();
     if (isRendererReady(renderer)) {
       try {
         // Returning false means "not handled" and deliberately requests v1 2D fallback.
