@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { CLOUD_ALTITUDE } from '../content/encounter';
-import type { CombatEvent, EnemyState, SliceState, Vec3State } from '../core/types';
+import type { CombatEvent, EnemyProjectileState, EnemyState, PlayerMissileState, SliceState, Vec3State } from '../core/types';
 import { ModelAssets, type ModelKey } from './model-assets';
 
 interface UnitVisual {
@@ -19,15 +19,15 @@ interface TimedEffect {
   spin: number;
 }
 
-interface ProjectileEffect {
-  object: THREE.Group;
+interface PlayerMissileVisual {
+  group: THREE.Group;
   trail: THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial>;
-  start: THREE.Vector3;
-  end: THREE.Vector3;
-  life: number;
-  maxLife: number;
-  impactColor: number;
-  impactScale: number;
+  points: THREE.Vector3[];
+}
+
+interface EnemyProjectileVisual {
+  group: THREE.Group;
+  trail: THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial>;
 }
 
 interface RibbonPoint {
@@ -45,6 +45,12 @@ function expLerp(rate: number, dt: number): number {
 
 function positionKey(value: Vec3State): string {
   return `${value.x.toFixed(2)}:${value.y.toFixed(2)}:${value.z.toFixed(2)}`;
+}
+
+function setLinePoints(geometry: THREE.BufferGeometry, points: readonly THREE.Vector3[]): void {
+  const positions = points.flatMap((point) => [point.x, point.y, point.z]);
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.computeBoundingSphere();
 }
 
 function standardMaterials(root: THREE.Object3D): THREE.MeshStandardMaterial[] {
@@ -82,8 +88,19 @@ class RibbonTrail {
   });
   private readonly mesh = new THREE.Mesh(this.geometry, this.material);
   private sampleTimer = 0;
+  private readonly headColor: THREE.Color;
+  private readonly tailColor: THREE.Color;
 
-  constructor(scene: THREE.Scene) {
+  constructor(
+    scene: THREE.Scene,
+    private readonly maxPoints = 34,
+    headColor = 0x70eaff,
+    tailColor = 0x0b4657,
+    opacity = 0.55
+  ) {
+    this.headColor = new THREE.Color(headColor);
+    this.tailColor = new THREE.Color(tailColor);
+    this.material.opacity = opacity;
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = 3;
     scene.add(this.mesh);
@@ -97,8 +114,15 @@ class RibbonTrail {
     if (this.sampleTimer > 0) return;
     this.sampleTimer = 0.045;
     this.points.push({ position: next, width });
-    if (this.points.length > 54) this.points.shift();
+    if (this.points.length > this.maxPoints) this.points.shift();
     this.rebuild();
+  }
+
+  clear(): void {
+    if (this.points.length === 0) return;
+    this.points.length = 0;
+    this.sampleTimer = 0;
+    this.geometry.setDrawRange(0, 0);
   }
 
   private rebuild(): void {
@@ -109,8 +133,6 @@ class RibbonTrail {
     const positions: number[] = [];
     const colors: number[] = [];
     const indices: number[] = [];
-    const cyan = new THREE.Color(0x70eaff);
-    const teal = new THREE.Color(0x0b4657);
     for (let index = 0; index < this.points.length; index += 1) {
       const point = this.points[index];
       if (!point) continue;
@@ -127,7 +149,7 @@ class RibbonTrail {
         point.position.x + px * widthAtPoint, point.position.y + 0.03, point.position.z + pz * widthAtPoint,
         point.position.x - px * widthAtPoint, point.position.y + 0.03, point.position.z - pz * widthAtPoint
       );
-      const color = teal.clone().lerp(cyan, Math.pow(age, 1.6));
+      const color = this.tailColor.clone().lerp(this.headColor, Math.pow(age, 1.6));
       colors.push(color.r, color.g, color.b, color.r, color.g, color.b);
       if (index < this.points.length - 1) {
         const base = index * 2;
@@ -149,14 +171,20 @@ export class FlightRenderer {
   private readonly camera = new THREE.PerspectiveCamera(28, 1, 0.1, 800);
   private readonly assets = new ModelAssets();
   private readonly playerVisual: UnitVisual;
+  private readonly playerAfterburner: THREE.Group;
+  private readonly playerBrakeVapor: THREE.Group;
   private readonly enemyVisuals = new Map<number, UnitVisual>();
+  private readonly enemyProjectileVisuals = new Map<number, EnemyProjectileVisual>();
+  private readonly playerMissileVisuals = new Map<number, PlayerMissileVisual>();
   private readonly trail: RibbonTrail;
+  private readonly focusTrail: RibbonTrail;
   private readonly effects: TimedEffect[] = [];
-  private readonly projectiles: ProjectileEffect[] = [];
   private readonly cameraPosition = new THREE.Vector3();
   private readonly cameraFocus = new THREE.Vector3();
   private readonly lockMarker: THREE.Group;
-  private readonly cloudMaterials: THREE.MeshStandardMaterial[] = [];
+  private readonly sensorMarker: THREE.Group;
+  private readonly threatBearing: THREE.Group;
+  private readonly cloudMaterials: THREE.MeshBasicMaterial[] = [];
   private readonly oceanUniforms = { time: { value: 0 } };
   private cameraReady = false;
   private width = 0;
@@ -169,17 +197,25 @@ export class FlightRenderer {
     this.renderer.setPixelRatio(Math.min(window.matchMedia('(pointer: coarse)').matches ? 1.6 : 2, window.devicePixelRatio || 1));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.12;
+    this.renderer.toneMappingExposure = 1.04;
     root.append(this.canvas);
 
-    this.scene.background = new THREE.Color(0x061923);
-    this.scene.fog = new THREE.FogExp2(0x061923, 0.0037);
+    this.scene.background = new THREE.Color(0x0d1a1e);
+    this.scene.fog = new THREE.FogExp2(0x0d1a1e, 0.0046);
     this.buildEnvironment();
     this.playerVisual = this.emptyVisual();
+    this.playerAfterburner = this.createPlayerManeuverJets(0x70eaff, 0.72, 2.8);
+    this.playerBrakeVapor = this.createPlayerManeuverJets(0xdafaff, 2.15, 3.8);
+    this.playerAfterburner.visible = false;
+    this.playerBrakeVapor.visible = false;
+    this.playerVisual.group.add(this.playerAfterburner, this.playerBrakeVapor);
     this.scene.add(this.playerVisual.group, this.playerVisual.shadow);
-    this.trail = new RibbonTrail(this.scene);
+    this.trail = new RibbonTrail(this.scene, 34, 0x70eaff, 0x0b4657, 0.48);
+    this.focusTrail = new RibbonTrail(this.scene, 24, 0xffbc66, 0x551d2a, 0.38);
     this.lockMarker = this.createLockMarker();
-    this.scene.add(this.lockMarker);
+    this.sensorMarker = this.createSensorMarker();
+    this.threatBearing = this.createThreatBearing();
+    this.scene.add(this.lockMarker, this.sensorMarker, this.threatBearing);
     this.resize();
     window.addEventListener('resize', () => this.resize());
   }
@@ -199,36 +235,63 @@ export class FlightRenderer {
     this.resizeIfNeeded();
     this.oceanUniforms.time.value += dt;
     this.syncPlayer(state);
+    this.syncThreatBearing(state);
     if (this.loaded) this.syncEnemies(state);
+    this.syncEnemyProjectiles(state);
+    this.syncPlayerMissiles(state);
     this.updateCamera(state, dt);
     this.updateEffects(dt);
-    this.updateProjectiles(dt);
-    this.updateClouds(state);
-    this.trail.update(state.player.position, 0.46 + Math.abs(state.player.bank) * 0.85 + state.player.speed / 150, dt);
+    this.updateClouds(state, dt);
+    const maneuverTrail = state.player.maneuver === 'EXTEND' ? 0.2 : state.player.maneuver === 'BREAK' ? Math.abs(state.player.bank) * 0.22 : 0;
+    const tacticalTrail = state.activeTactic === 'NONE' ? 0 : 0.28 + Math.min(0.18, state.tacticChain * 0.035);
+    this.trail.update(state.player.position, 0.22 + Math.abs(state.player.bank) * 0.52 + state.player.speed / 320 + maneuverTrail + tacticalTrail, dt);
+    const focusAircraft = state.enemies.find((enemy) => enemy.kind === 'ace' && enemy.alive)
+      ?? state.enemies.find((enemy) => enemy.id === state.lockTargetId && enemy.alive && enemy.kind === 'interceptor');
+    if (focusAircraft) this.focusTrail.update(focusAircraft.position, 0.18 + Math.abs(focusAircraft.bank) * 0.5, dt);
+    else this.focusTrail.clear();
     this.renderer.render(this.scene, this.camera);
   }
 
   handleEvents(events: CombatEvent[]): void {
-    const missileTargets = new Map<string, number>();
-    for (const missile of events.filter((event) => event.type === 'missile' && event.from && event.to)) {
-      const key = positionKey(missile.to!);
-      const killed = events.some((event) => event.type === 'kill' && event.from && positionKey(event.from) === key);
-      missileTargets.set(key, killed ? 3.3 : 1.25);
-      this.createMissile(missile.from!, missile.to!, missile.color ?? 0x70eaff, killed ? 3.3 : 1.25);
-    }
+    const missileTargets = new Set(events
+      .filter((event) => event.type === 'missileImpact' && (event.to || event.from))
+      .map((event) => positionKey(event.to ?? event.from!)));
     for (const event of events) {
-      if ((event.type === 'gun' || event.type === 'playerHit' || event.type === 'heavyDamage' || event.type === 'graze' || event.type === 'warning') && event.from && event.to) {
+      if ((event.type === 'gun' || event.type === 'gunRake' || event.type === 'playerHit' || event.type === 'heavyDamage' || event.type === 'graze' || event.type === 'warning' || event.type === 'overshoot') && event.from && event.to) {
         const heavy = event.type === 'heavyDamage';
         const warning = event.type === 'warning';
         const graze = event.type === 'graze';
-        this.createBeam(event.from, event.to, event.color ?? 0xffffff, heavy ? 0.16 : warning ? 0.11 : graze ? 0.045 : 0.075, heavy ? 0.24 : warning ? 0.3 : graze ? 0.34 : 0.11);
+        const rake = event.type === 'gunRake';
+        const overshoot = event.type === 'overshoot';
+        this.createBeam(event.from, event.to, event.color ?? 0xffffff, heavy ? 0.16 : warning ? 0.11 : rake ? 0.14 : graze ? 0.045 : overshoot ? 0.055 : 0.075, heavy ? 0.24 : warning ? 0.3 : rake ? 0.2 : graze ? 0.34 : overshoot ? 0.42 : 0.11);
         if (heavy) this.createBurst(event.to, 0xff334c, 1.6, 0.3);
+        if (rake) this.createBurst(event.to, 0xffd37a, 1.45, 0.28);
         if (graze) this.createAltitudeRing(event.to, 0xb9f4ff, 0.36);
+        if (overshoot) {
+          this.createAltitudeRing(event.from, 0x70eaff, 0.48);
+          this.createAltitudeRing(event.to, 0x70eaff, 0.62);
+        }
       }
-      if ((event.type === 'hit' || event.type === 'kill') && event.from && !missileTargets.has(positionKey(event.from))) {
-        this.createBurst(event.from, event.color ?? 0xffffff, event.type === 'kill' ? 3.3 : 1.15, event.type === 'kill' ? 0.65 : 0.22);
+      if (event.type === 'missileImpact' && (event.to || event.from)) {
+        const impact = event.to ?? event.from!;
+        this.createBurst(impact, event.color ?? 0x7ce8f2, 2.35, 0.44);
+        this.createAltitudeRing(impact, event.color ?? 0x7ce8f2, 0.38);
+      }
+      if (event.type === 'missileMiss' && event.from) this.createBurst(event.from, 0x7c9aa0, 0.72, 0.18);
+      if ((event.type === 'hit' || event.type === 'kill') && event.from) {
+        const missileHit = missileTargets.has(positionKey(event.from));
+        if (!missileHit || event.type === 'kill') {
+          this.createBurst(event.from, event.color ?? 0xffffff, event.type === 'kill' ? (missileHit ? 4.1 : 3.3) : 1.15, event.type === 'kill' ? 0.65 : 0.22);
+        }
       }
       if (event.type === 'altitude' && event.from) this.createAltitudeRing(event.from, 0x70eaff, 0.62);
+      if (event.type === 'lock' && event.from) this.createAltitudeRing(event.from, 0x70eaff, 0.42);
+      if (event.type === 'perfect' && event.from) this.createAltitudeRing(event.from, 0xffd37a, 0.58);
+      if (event.type === 'recovery' && event.from) this.createAltitudeRing(event.from, 0x70eaff, 1.25);
+      if (event.type === 'maneuver' && event.from) {
+        this.createAltitudeRing(event.from, event.color ?? 0x70eaff, 0.95);
+        this.createBurst(event.from, event.color ?? 0x70eaff, 0.9, 0.24);
+      }
       if (event.type === 'phase' && event.from) this.createAltitudeRing(event.from, 0xffbc66, 1.05);
     }
   }
@@ -238,9 +301,9 @@ export class FlightRenderer {
   }
 
   private buildEnvironment(): void {
-    const hemisphere = new THREE.HemisphereLight(0xbceeff, 0x162b27, 2.7);
-    const sun = new THREE.DirectionalLight(0xffe8bd, 3.5);
-    sun.position.set(-70, 120, -48);
+    const hemisphere = new THREE.HemisphereLight(0xa7bbc1, 0x111b1a, 2.35);
+    const sun = new THREE.DirectionalLight(0xffd5a0, 3.15);
+    sun.position.set(-92, 104, -62);
     this.scene.add(hemisphere, sun);
 
     const oceanMaterial = new THREE.ShaderMaterial({
@@ -251,7 +314,9 @@ export class FlightRenderer {
         varying float vWave;
         void main() {
           vec3 p = position;
-          float wave = sin(p.x * 0.12 + time * 0.7) * 0.28 + cos(p.y * 0.09 - time * 0.52) * 0.22;
+          float longWave = sin(p.x * 0.075 + p.y * 0.035 + time * 0.46) * 0.34;
+          float crossWave = cos(p.x * 0.025 - p.y * 0.11 - time * 0.31) * 0.18;
+          float wave = longWave + crossWave;
           p.z += wave;
           vPosition = p.xy;
           vWave = wave;
@@ -263,109 +328,127 @@ export class FlightRenderer {
         varying vec2 vPosition;
         varying float vWave;
         void main() {
-          float lanes = sin((vPosition.x + vPosition.y) * 0.18 + time * 0.35) * 0.5 + 0.5;
-          float fine = sin(vPosition.x * 0.42 - vPosition.y * 0.24 - time * 0.6) * 0.5 + 0.5;
-          vec3 deep = vec3(0.025, 0.17, 0.22);
-          vec3 crest = vec3(0.055, 0.34, 0.39);
-          float light = clamp(lanes * 0.16 + fine * 0.07 + vWave * 0.18, 0.0, 0.3);
-          gl_FragColor = vec4(mix(deep, crest, light), 1.0);
+          float swell = sin(vPosition.x * 0.11 + vPosition.y * 0.055 + time * 0.24) * 0.5 + 0.5;
+          float chop = sin(vPosition.x * 0.31 - vPosition.y * 0.18 - time * 0.42) * 0.5 + 0.5;
+          float glintBand = smoothstep(0.91, 1.0, sin(vPosition.x * 0.035 + vPosition.y * 0.021));
+          vec3 abyss = vec3(0.022, 0.078, 0.092);
+          vec3 slate = vec3(0.09, 0.18, 0.20);
+          vec3 dawn = vec3(0.34, 0.31, 0.24);
+          float surface = clamp(0.14 + swell * 0.16 + chop * 0.05 + vWave * 0.08, 0.0, 0.36);
+          vec3 color = mix(abyss, slate, surface);
+          color = mix(color, dawn, glintBand * (0.02 + chop * 0.035));
+          gl_FragColor = vec4(color, 1.0);
         }
       `
     });
-    const ocean = new THREE.Mesh(new THREE.PlaneGeometry(440, 440, 64, 64), oceanMaterial);
+    const ocean = new THREE.Mesh(new THREE.PlaneGeometry(460, 460, 72, 72), oceanMaterial);
     ocean.rotation.x = -Math.PI / 2;
-    ocean.position.y = -0.2;
+    ocean.position.y = -0.45;
     this.scene.add(ocean);
 
-    const grid = new THREE.GridHelper(320, 32, 0x2e8290, 0x174754);
-    grid.position.y = 0.04;
-    const gridMaterials = Array.isArray(grid.material) ? grid.material : [grid.material];
-    for (const material of gridMaterials) {
-      material.transparent = true;
-      material.opacity = 0.16;
-      material.depthWrite = false;
-    }
-    this.scene.add(grid);
-
-    const sandMaterial = new THREE.MeshStandardMaterial({ color: 0x927a54, roughness: 1, flatShading: true });
-    const landMaterial = new THREE.MeshStandardMaterial({ color: 0x496c52, roughness: 0.96, flatShading: true });
-    const rockMaterial = new THREE.MeshStandardMaterial({ color: 0x5c5147, roughness: 1, flatShading: true });
+    const landMaterial = new THREE.MeshStandardMaterial({ color: 0x36453f, roughness: 0.98, metalness: 0.02, flatShading: true });
+    const rockMaterial = new THREE.MeshStandardMaterial({ color: 0x2b3332, roughness: 0.96, metalness: 0.04, flatShading: true });
     const islands = [
       [-74, -12, 16, 0.5], [66, -54, 12, 1.1], [78, 78, 20, 0.1], [-88, 76, 14, 0.8], [34, 44, 11, 0.2], [-42, 58, 10, 0.7]
     ] as const;
     for (const [x, z, radius, rotation] of islands) {
-      const shelf = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.78, radius * 1.08, 1.4, 9), sandMaterial);
-      shelf.position.set(x, 0.5, z);
-      shelf.rotation.y = rotation;
-      const rock = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.72, radius * 0.92, 3.2, 9), rockMaterial);
-      rock.position.set(x, 2, z);
-      rock.rotation.y = rotation + 0.12;
-      const top = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.65, radius * 0.75, 1.1, 9), landMaterial);
-      top.position.set(x, 4.1, z);
-      top.rotation.y = rotation;
-      this.scene.add(shelf, rock, top);
+      const geometry = new THREE.CylinderGeometry(radius * 0.82, radius, 4.4, 17, 2);
+      const positions = geometry.attributes.position;
+      for (let index = 0; index < positions.count; index += 1) {
+        const px = positions.getX(index);
+        const pz = positions.getZ(index);
+        const angle = Math.atan2(pz, px);
+        const irregularity = 1 + Math.sin(angle * 3.1 + rotation * 4.0) * 0.055 + Math.cos(angle * 7.0 - rotation) * 0.035;
+        positions.setXYZ(index, px * irregularity, positions.getY(index), pz * irregularity);
+      }
+      geometry.computeVertexNormals();
+      const island = new THREE.Mesh(geometry, [rockMaterial, landMaterial, rockMaterial]);
+      island.position.set(x, 1.65, z);
+      island.rotation.y = rotation;
+      this.scene.add(island);
+
+      const wash = new THREE.Mesh(
+        new THREE.RingGeometry(radius * 0.91, radius * 1.05, 36),
+        new THREE.MeshBasicMaterial({ color: 0xb7c6c3, transparent: true, opacity: 0.12, depthWrite: false, side: THREE.DoubleSide })
+      );
+      wash.rotation.x = -Math.PI / 2;
+      wash.position.set(x, -0.2, z);
+      this.scene.add(wash);
     }
 
     this.buildClouds();
-    const arenaRing = new THREE.Mesh(
-      new THREE.RingGeometry(137, 138, 112),
-      new THREE.MeshBasicMaterial({ color: 0x65d9e6, transparent: true, opacity: 0.13, side: THREE.DoubleSide, depthWrite: false })
-    );
-    arenaRing.rotation.x = -Math.PI / 2;
-    arenaRing.position.y = 0.06;
-    this.scene.add(arenaRing);
   }
 
   private buildClouds(): void {
+    const texture = new THREE.TextureLoader().load('/assets/textures/skyfire-cloud-512.png');
+    texture.colorSpace = THREE.SRGBColorSpace;
     const cloudClusters = [
       [-42, -12, 1.1], [18, 20, 0.85], [65, -5, 1.25], [-78, 52, 0.92], [35, 83, 1.15], [-5, -77, 1]
     ] as const;
     for (const [x, z, scale] of cloudClusters) {
-      const group = new THREE.Group();
-      group.position.set(x, CLOUD_ALTITUDE, z);
-      for (let index = 0; index < 5; index += 1) {
-        const material = new THREE.MeshStandardMaterial({
-          color: index % 2 ? 0xc3e7ed : 0xe0f5f6,
-          transparent: true,
-          opacity: 0.22,
-          roughness: 1,
-          depthWrite: false,
-          flatShading: true
-        });
-        const puff = new THREE.Mesh(new THREE.IcosahedronGeometry(5.2 + (index % 3), 1), material);
-        const angle = (index / 5) * Math.PI * 2;
-        puff.position.set(Math.cos(angle) * 5.2, (index % 2) * 0.8, Math.sin(angle) * 3.2);
-        puff.scale.set(1.6 * scale, 0.42 * scale, 1.05 * scale);
-        puff.renderOrder = 2;
-        this.cloudMaterials.push(material);
-        group.add(puff);
-      }
-      this.scene.add(group);
+      const material = new THREE.MeshBasicMaterial({
+        map: texture,
+        color: 0xb8c2c0,
+        transparent: true,
+        opacity: 0.18,
+        alphaTest: 0.018,
+        depthWrite: false,
+        side: THREE.DoubleSide
+      });
+      const cloud = new THREE.Mesh(new THREE.PlaneGeometry(25 * scale, 25 * scale), material);
+      cloud.position.set(x, CLOUD_ALTITUDE, z);
+      cloud.rotation.set(-Math.PI / 2, 0, scale * 1.73);
+      cloud.renderOrder = 2;
+      this.cloudMaterials.push(material);
+      this.scene.add(cloud);
     }
   }
 
   private installSetDressing(): void {
-    const placements = [
-      [-74, 4.4, -12, 0.5], [78, 4.4, 78, -0.4], [66, 4.4, -54, 1.1]
+    const base = this.assets.clone('island', [0x55625b, 0x2c3534, 0x69736b]);
+    base.position.set(78, -5.8, 78);
+    base.rotation.y = -0.32;
+    this.scene.add(base);
+
+    const boats = [
+      [-64, -0.3, 24, -0.7, 0.82], [59, -0.3, 13, 1.05, 0.58]
     ] as const;
-    for (const [x, y, z, rotation] of placements) {
-      const hangar = this.assets.clone('hangar', [0x38545a, 0x8c7a59, 0x23363b]);
-      hangar.position.set(x, y, z);
-      hangar.rotation.y = rotation;
-      this.scene.add(hangar);
+    for (const [x, y, z, rotation, scale] of boats) {
+      const patrol = this.assets.clone('patrol', [0x29383b, 0x59635f, 0x151e21, 0x8f9b94]);
+      patrol.position.set(x, y, z);
+      patrol.rotation.y = rotation;
+      patrol.scale.setScalar(scale);
+      this.scene.add(patrol);
     }
   }
 
   private addAircraftAccents(root: THREE.Group, accent: number, player: boolean): void {
     const glow = new THREE.MeshStandardMaterial({ color: accent, emissive: accent, emissiveIntensity: 1.2, roughness: 0.3, metalness: 0.18 });
-    const canopy = new THREE.MeshStandardMaterial({ color: player ? 0x102c3c : 0x291923, roughness: 0.2, metalness: 0.78 });
-    const cockpit = new THREE.Mesh(new THREE.BoxGeometry(player ? 0.78 : 0.68, 0.45, 1.75), canopy);
-    cockpit.position.set(0, 0.72, 0.65);
-    cockpit.rotation.x = -0.08;
-    const engine = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.55, 1.25, 8), glow);
-    engine.rotation.x = Math.PI / 2;
-    engine.position.set(0, 0.52, -3.55);
-    root.add(cockpit, engine);
+    const spacing = player ? 0.82 : 0.64;
+    for (const side of [-1, 1]) {
+      const engine = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.43, 1.15, 8), glow);
+      engine.rotation.x = Math.PI / 2;
+      engine.position.set(side * spacing, 0.36, -3.58);
+      root.add(engine);
+    }
+  }
+
+  private createPlayerManeuverJets(color: number, spacing: number, length: number): THREE.Group {
+    const group = new THREE.Group();
+    for (const side of [-1, 1]) {
+      const material = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.62,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending
+      });
+      const jet = new THREE.Mesh(new THREE.ConeGeometry(spacing > 1 ? 0.16 : 0.28, length, 8), material);
+      jet.rotation.x = -Math.PI / 2;
+      jet.position.set(side * spacing, spacing > 1 ? 0.15 : 0.34, spacing > 1 ? -2.2 : -4.75);
+      group.add(jet);
+    }
+    return group;
   }
 
   private createUnitVisual(key: ModelKey, palette: readonly number[], accent: number, ground: boolean): UnitVisual {
@@ -376,10 +459,18 @@ export class FlightRenderer {
     group.add(model);
 
     if (ground) {
-      const platformMaterial = new THREE.MeshStandardMaterial({ color: 0x25383b, roughness: 0.72, metalness: 0.35 });
-      const platform = new THREE.Mesh(new THREE.CylinderGeometry(4.5, 5.1, 1.25, 10), platformMaterial);
-      platform.position.y = -0.05;
+      const platformMaterial = new THREE.MeshStandardMaterial({ color: 0x293231, roughness: 0.9, metalness: 0.12 });
+      const platform = new THREE.Mesh(new THREE.CylinderGeometry(4.3, 4.65, 0.55, 12), platformMaterial);
+      platform.position.y = -0.28;
       group.add(platform);
+
+      const serviceMark = new THREE.Mesh(
+        new THREE.RingGeometry(3.75, 4.08, 32, 1, 0.16, Math.PI * 1.28),
+        new THREE.MeshBasicMaterial({ color: 0xc4a55d, transparent: true, opacity: 0.38, side: THREE.DoubleSide, depthWrite: false })
+      );
+      serviceMark.rotation.x = -Math.PI / 2;
+      serviceMark.position.y = 0.015;
+      group.add(serviceMark);
     }
 
     const shadow = new THREE.Group();
@@ -396,7 +487,7 @@ export class FlightRenderer {
 
     const warningRing = ground
       ? new THREE.Mesh(
-          new THREE.RingGeometry(5.2, 5.85, 40),
+          new THREE.RingGeometry(5.15, 5.42, 40),
           new THREE.MeshBasicMaterial({ color: accent, transparent: true, opacity: 0.68, side: THREE.DoubleSide, depthWrite: false })
         )
       : null;
@@ -409,9 +500,9 @@ export class FlightRenderer {
   }
 
   private createEnemyVisual(enemy: EnemyState): UnitVisual {
-    if (enemy.kind === 'aa') return this.createUnitVisual('aa', [0x7c3847, 0x332d33, 0xff556c], 0xff556c, true);
-    if (enemy.kind === 'radar') return this.createUnitVisual('radar', [0x927344, 0x343633, 0xffbc66], 0xffbc66, true);
-    if (enemy.kind === 'ace') return this.createUnitVisual('interceptor', [0x8f2638, 0x2d1720, 0xffbc66], 0xffbc66, false);
+    if (enemy.kind === 'aa') return this.createUnitVisual('aa', [0x323b38, 0x59625a, 0x1b2424, 0xff5a5f], 0xff5a5f, true);
+    if (enemy.kind === 'radar') return this.createUnitVisual('radar', [0x4b5550, 0x242d2c, 0xf5b84b], 0xf5b84b, true);
+    if (enemy.kind === 'ace') return this.createUnitVisual('ace', [0x85283a, 0x261820, 0xffbc66, 0xd6aa6c], 0xffbc66, false);
     return this.createUnitVisual('interceptor', [0xbe3d50, 0x321a22, 0xff6679], 0xff556c, false);
   }
 
@@ -433,15 +524,88 @@ export class FlightRenderer {
     return group;
   }
 
+  private createSensorMarker(): THREE.Group {
+    const group = new THREE.Group();
+    const material = new THREE.MeshBasicMaterial({ color: 0x8aaab0, transparent: true, opacity: 0.48, depthWrite: false });
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(4.7, 0.075, 4, 24), material);
+    ring.rotation.x = Math.PI / 2;
+    group.add(ring);
+    for (const side of [-1, 1]) {
+      const bracket = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 1.7), material);
+      bracket.position.x = side * 5.1;
+      bracket.rotation.y = Math.PI / 2;
+      group.add(bracket);
+    }
+    group.visible = false;
+    group.renderOrder = 3;
+    return group;
+  }
+
+  private createThreatBearing(): THREE.Group {
+    const group = new THREE.Group();
+    const material = new THREE.MeshBasicMaterial({
+      color: 0xf5b84b,
+      transparent: true,
+      opacity: 0.76,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    });
+    const arc = new THREE.Mesh(new THREE.RingGeometry(4.7, 5.0, 30, 1, -Math.PI / 2 - 0.42, 0.84), material);
+    arc.rotation.x = -Math.PI / 2;
+    group.add(arc);
+    for (const side of [-1, 1]) {
+      const tick = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 0.82), material);
+      tick.position.set(side * 2.12, 0.03, 4.25);
+      tick.rotation.y = side * -0.46;
+      group.add(tick);
+    }
+    group.visible = false;
+    group.renderOrder = 7;
+    return group;
+  }
+
+  private syncThreatBearing(state: SliceState): void {
+    const projectile = state.projectiles
+      .map((candidate) => ({ candidate, distance: Math.hypot(candidate.position.x - state.player.position.x, candidate.position.z - state.player.position.z) }))
+      .sort((a, b) => a.distance - b.distance)[0]?.candidate;
+    const telegraph = state.enemies
+      .filter((enemy) => enemy.alive && enemy.telegraph > 0)
+      .sort((a, b) => b.telegraph - a.telegraph)[0];
+    const threat = projectile?.position ?? telegraph?.position;
+    this.threatBearing.visible = Boolean(threat) && !state.ended;
+    if (!threat) return;
+
+    const dx = threat.x - state.player.position.x;
+    const dz = threat.z - state.player.position.z;
+    this.threatBearing.position.set(state.player.position.x, state.player.position.y + 0.16, state.player.position.z);
+    this.threatBearing.rotation.y = Math.atan2(dx, dz);
+    this.threatBearing.traverse((child) => {
+      if (!(child instanceof THREE.Mesh) || !(child.material instanceof THREE.MeshBasicMaterial)) return;
+      child.material.color.setHex(projectile ? 0xff5a5f : 0xf5b84b);
+      child.material.opacity = projectile ? 0.9 : 0.68;
+    });
+  }
+
   private syncPlayer(state: SliceState): void {
     const player = state.player;
     this.playerVisual.group.position.set(player.position.x, player.position.y, player.position.z);
-    this.playerVisual.group.rotation.set(0, player.heading, player.bank, 'YXZ');
+    const pitch = THREE.MathUtils.clamp(-player.verticalSpeed * 0.018, -0.3, 0.3);
+    this.playerVisual.group.rotation.set(pitch, player.heading, player.bank, 'YXZ');
     this.playerVisual.shadow.position.set(player.position.x, 0.08, player.position.z);
     this.playerVisual.shadow.rotation.y = player.heading;
     const scale = 1 + player.position.y * 0.036;
     this.playerVisual.shadow.scale.set(scale, 0.035, scale);
     setShadowOpacity(this.playerVisual.shadow, Math.max(0.1, 0.48 - player.position.y * 0.009));
+    this.playerAfterburner.visible = player.maneuver === 'EXTEND';
+    if (this.playerAfterburner.visible) {
+      const thrust = 0.82 + (player.speed - 44) / 34 + Math.sin(state.elapsed * 38) * 0.08;
+      this.playerAfterburner.scale.set(1, 1, Math.max(0.72, thrust));
+    }
+    this.playerBrakeVapor.visible = player.maneuver === 'BREAK' && Math.abs(player.bank) > 0.14;
+    if (this.playerBrakeVapor.visible) {
+      const load = 0.75 + Math.abs(player.bank) * 0.65 + Math.sin(state.elapsed * 31) * 0.06;
+      this.playerBrakeVapor.scale.set(1, 1, load);
+    }
   }
 
   private syncEnemies(state: SliceState): void {
@@ -462,9 +626,10 @@ export class FlightRenderer {
       visual.shadow.visible = enemy.alive;
       if (!enemy.alive) continue;
 
-      visual.group.position.set(enemy.position.x, enemy.position.y, enemy.position.z);
       const isAircraft = enemy.kind === 'interceptor' || enemy.kind === 'ace';
-      visual.group.rotation.set(0, enemy.heading, isAircraft ? Math.sin(state.elapsed * 1.7 + enemy.id) * 0.18 : 0, 'YXZ');
+      visual.group.position.set(enemy.position.x, enemy.position.y + (isAircraft ? 0 : 2.8), enemy.position.z);
+      const pitch = isAircraft ? THREE.MathUtils.clamp(-enemy.verticalSpeed * 0.02, -0.28, 0.28) : 0;
+      visual.group.rotation.set(pitch, enemy.heading, isAircraft ? enemy.bank : 0, 'YXZ');
       visual.shadow.position.set(enemy.position.x, 0.075, enemy.position.z);
       visual.shadow.rotation.y = enemy.heading;
       const shadowScale = isAircraft ? 1 + enemy.position.y * 0.032 : 1;
@@ -495,8 +660,166 @@ export class FlightRenderer {
     if (target) {
       const ground = target.kind === 'aa' || target.kind === 'radar';
       this.lockMarker.position.set(target.position.x, target.position.y + (ground ? 4.4 : 0.4), target.position.z);
-      this.lockMarker.scale.setScalar(0.9 + Math.sin(state.elapsed * 11) * 0.08);
+      const lockPulse = state.lockReady ? Math.sin(state.elapsed * 16) * 0.09 : 0;
+      this.lockMarker.scale.setScalar(1.28 - state.lockProgress * 0.34 + lockPulse);
+      this.lockMarker.rotation.y = state.elapsed * (state.lockReady ? 1.8 : 0.65);
+      this.lockMarker.traverse((child) => {
+        if (!(child instanceof THREE.Mesh) || !(child.material instanceof THREE.MeshBasicMaterial)) return;
+        child.material.color.setHex(state.lockPerfect ? 0xffd37a : state.lockReady ? 0x70eaff : 0xffce75);
+        child.material.opacity = 0.42 + state.lockProgress * 0.5;
+      });
     }
+
+    const sensorTarget = state.sensorTargetId === null || state.sensorTargetId === state.lockTargetId
+      ? null
+      : state.enemies.find((enemy) => enemy.id === state.sensorTargetId && enemy.alive);
+    this.sensorMarker.visible = Boolean(sensorTarget);
+    if (sensorTarget) {
+      const ground = sensorTarget.kind === 'aa' || sensorTarget.kind === 'radar';
+      this.sensorMarker.position.set(sensorTarget.position.x, sensorTarget.position.y + (ground ? 4.4 : 0.4), sensorTarget.position.z);
+      this.sensorMarker.rotation.y = -state.elapsed * 0.35;
+      this.sensorMarker.scale.setScalar(1 + Math.sin(state.elapsed * 4) * 0.04);
+      this.sensorMarker.traverse((child) => {
+        if (!(child instanceof THREE.Mesh) || !(child.material instanceof THREE.MeshBasicMaterial)) return;
+        child.material.color.setHex(state.targetLayerMatch ? 0x8aaab0 : 0x6c7d91);
+        child.material.opacity = state.targetLayerMatch ? 0.5 : 0.32;
+      });
+    }
+  }
+
+  private syncEnemyProjectiles(state: SliceState): void {
+    const activeIds = new Set(state.projectiles.map((projectile) => projectile.id));
+    for (const [id, visual] of this.enemyProjectileVisuals) {
+      if (activeIds.has(id)) continue;
+      this.scene.remove(visual.group, visual.trail);
+      visual.group.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return;
+        child.geometry.dispose();
+        const materials = Array.isArray(child.material) ? child.material : [child.material];
+        for (const material of materials) material.dispose();
+      });
+      visual.trail.geometry.dispose();
+      visual.trail.material.dispose();
+      this.enemyProjectileVisuals.delete(id);
+    }
+
+    for (const projectile of state.projectiles) {
+      let visual = this.enemyProjectileVisuals.get(projectile.id);
+      if (!visual) {
+        visual = this.createEnemyProjectileVisual(projectile);
+        this.enemyProjectileVisuals.set(projectile.id, visual);
+        this.scene.add(visual.group, visual.trail);
+      }
+      visual.group.position.copy(toVector3(projectile.position));
+      const velocity = toVector3(projectile.velocity);
+      if (velocity.lengthSq() > 0.001) {
+        const direction = velocity.normalize();
+        visual.group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+        const tail = toVector3(projectile.position).addScaledVector(direction, projectile.kind === 'flak' ? -4.2 : -7.2);
+        setLinePoints(visual.trail.geometry, [tail, toVector3(projectile.position)]);
+      }
+    }
+  }
+
+  private createEnemyProjectileVisual(projectile: EnemyProjectileState): EnemyProjectileVisual {
+    const flak = projectile.kind === 'flak';
+    const color = flak ? 0xff704f : 0xffbc66;
+    const group = new THREE.Group();
+    const coreMaterial = new THREE.MeshBasicMaterial({
+      color: flak ? 0xffe0a3 : 0xfff2cf,
+      transparent: true,
+      opacity: 0.96,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    });
+    const core = new THREE.Mesh(
+      flak ? new THREE.IcosahedronGeometry(0.62, 1) : new THREE.CylinderGeometry(0.12, 0.24, 1.7, 6),
+      coreMaterial
+    );
+    group.add(core);
+    if (flak) {
+      const shell = new THREE.Mesh(
+        new THREE.SphereGeometry(1.05, 10, 7),
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.16, wireframe: true, depthWrite: false })
+      );
+      group.add(shell);
+    }
+    group.renderOrder = 6;
+    const trail = new THREE.Line(
+      new THREE.BufferGeometry(),
+      new THREE.LineBasicMaterial({ color, transparent: true, opacity: flak ? 0.7 : 0.9, depthWrite: false, blending: THREE.AdditiveBlending })
+    );
+    trail.frustumCulled = false;
+    trail.renderOrder = 5;
+    return { group, trail };
+  }
+
+  private syncPlayerMissiles(state: SliceState): void {
+    const activeIds = new Set(state.playerMissiles.map((missile) => missile.id));
+    for (const [id, visual] of this.playerMissileVisuals) {
+      if (activeIds.has(id)) continue;
+      this.scene.remove(visual.group, visual.trail);
+      visual.group.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return;
+        child.geometry.dispose();
+        const materials = Array.isArray(child.material) ? child.material : [child.material];
+        for (const material of materials) material.dispose();
+      });
+      visual.trail.geometry.dispose();
+      visual.trail.material.dispose();
+      this.playerMissileVisuals.delete(id);
+    }
+
+    for (const missile of state.playerMissiles) {
+      let visual = this.playerMissileVisuals.get(missile.id);
+      if (!visual) {
+        visual = this.createPlayerMissileVisual(missile);
+        this.playerMissileVisuals.set(missile.id, visual);
+        this.scene.add(visual.group, visual.trail);
+      }
+      const position = toVector3(missile.position);
+      visual.group.position.copy(position);
+      const velocity = toVector3(missile.velocity);
+      if (velocity.lengthSq() > 0.001) visual.group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), velocity.normalize());
+      const last = visual.points.at(-1);
+      if (!last || last.distanceTo(position) > 0.55) {
+        if (last && last.distanceTo(position) > 28) visual.points.length = 0;
+        visual.points.push(position.clone());
+        if (visual.points.length > 16) visual.points.shift();
+        setLinePoints(visual.trail.geometry, visual.points);
+      }
+      visual.trail.material.opacity = missile.stage === 'POWERED' ? 0.88 : 0.24;
+      visual.group.scale.setScalar(missile.quality === 'PERFECT' ? 1.16 : 1);
+    }
+  }
+
+  private createPlayerMissileVisual(missile: PlayerMissileState): PlayerMissileVisual {
+    const color = missile.quality === 'PERFECT' ? 0xffd37a : 0x70eaff;
+    const group = new THREE.Group();
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.16, 0.22, 1.55, 7),
+      new THREE.MeshStandardMaterial({ color: 0xeef8f8, emissive: color, emissiveIntensity: 1.35, roughness: 0.26, metalness: 0.3 })
+    );
+    const nose = new THREE.Mesh(
+      new THREE.ConeGeometry(0.2, 0.52, 7),
+      new THREE.MeshStandardMaterial({ color: 0xf8ffff, emissive: color, emissiveIntensity: 0.8, roughness: 0.2 })
+    );
+    nose.position.y = 1.02;
+    const flame = new THREE.Mesh(
+      new THREE.ConeGeometry(0.28, 1.2, 8),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9, depthWrite: false, blending: THREE.AdditiveBlending })
+    );
+    flame.position.y = -1.28;
+    flame.rotation.z = Math.PI;
+    group.add(body, nose, flame);
+    group.renderOrder = 7;
+    const trail = new THREE.Line(
+      new THREE.BufferGeometry(),
+      new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.88, depthWrite: false, blending: THREE.AdditiveBlending })
+    );
+    trail.frustumCulled = false;
+    trail.renderOrder = 6;
+    return { group, trail, points: [] };
   }
 
   private updateCamera(state: SliceState, dt: number): void {
@@ -518,9 +841,10 @@ export class FlightRenderer {
     this.camera.lookAt(this.cameraFocus);
   }
 
-  private updateClouds(state: SliceState): void {
-    const opacity = state.player.position.y < CLOUD_ALTITUDE ? 0.31 : 0.13;
-    for (const material of this.cloudMaterials) material.opacity = opacity;
+  private updateClouds(state: SliceState, dt: number): void {
+    const altitudeBlend = THREE.MathUtils.smoothstep(state.player.position.y, CLOUD_ALTITUDE - 5, CLOUD_ALTITUDE + 5);
+    const opacity = THREE.MathUtils.lerp(0.20, 0.09, altitudeBlend);
+    for (const material of this.cloudMaterials) material.opacity = THREE.MathUtils.lerp(material.opacity, opacity, expLerp(3.4, dt));
   }
 
   private createBeam(from: Vec3State, to: Vec3State, color: number, width: number, life: number): void {
@@ -536,23 +860,6 @@ export class FlightRenderer {
     beam.renderOrder = 5;
     this.scene.add(beam);
     this.effects.push({ object: beam, materials: [material], life, maxLife: life, growth: 0, spin: 0 });
-  }
-
-  private createMissile(from: Vec3State, to: Vec3State, color: number, impactScale: number): void {
-    const start = toVector3(from);
-    const end = toVector3(to);
-    const group = new THREE.Group();
-    const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0xeaf8f8, emissive: color, emissiveIntensity: 1.8, roughness: 0.28 });
-    const body = new THREE.Mesh(new THREE.ConeGeometry(0.28, 1.8, 7), bodyMaterial);
-    body.rotation.x = Math.PI / 2;
-    group.add(body);
-    group.position.copy(start);
-    group.renderOrder = 6;
-    const trailMaterial = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.82, depthWrite: false, blending: THREE.AdditiveBlending });
-    const trailGeometry = new THREE.BufferGeometry().setFromPoints([start, start]);
-    const trail = new THREE.Line(trailGeometry, trailMaterial);
-    this.scene.add(group, trail);
-    this.projectiles.push({ object: group, trail, start, end, life: 0.34, maxLife: 0.34, impactColor: color, impactScale });
   }
 
   private createBurst(position: Vec3State, color: number, radius: number, life: number): void {
@@ -599,34 +906,6 @@ export class FlightRenderer {
       });
       for (const material of effect.materials) material.dispose();
       this.effects.splice(index, 1);
-    }
-  }
-
-  private updateProjectiles(dt: number): void {
-    for (let index = this.projectiles.length - 1; index >= 0; index -= 1) {
-      const projectile = this.projectiles[index];
-      if (!projectile) continue;
-      projectile.life -= dt;
-      const progress = THREE.MathUtils.clamp(1 - projectile.life / projectile.maxLife, 0, 1);
-      const curved = 1 - Math.pow(1 - progress, 2.4);
-      projectile.object.position.lerpVectors(projectile.start, projectile.end, curved);
-      projectile.object.position.y += Math.sin(progress * Math.PI) * 3.2;
-      projectile.object.lookAt(projectile.end);
-      const trailStart = projectile.object.position.clone().lerp(projectile.start, 0.24);
-      projectile.trail.geometry.setFromPoints([trailStart, projectile.object.position]);
-      projectile.trail.material.opacity = Math.max(0.18, 1 - progress * 0.55);
-      if (projectile.life > 0) continue;
-      this.scene.remove(projectile.object, projectile.trail);
-      projectile.object.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
-          child.geometry.dispose();
-          if (child.material instanceof THREE.Material) child.material.dispose();
-        }
-      });
-      projectile.trail.geometry.dispose();
-      projectile.trail.material.dispose();
-      this.createBurst({ x: projectile.end.x, y: projectile.end.y, z: projectile.end.z }, projectile.impactColor, projectile.impactScale, projectile.impactScale > 2 ? 0.68 : 0.24);
-      this.projectiles.splice(index, 1);
     }
   }
 

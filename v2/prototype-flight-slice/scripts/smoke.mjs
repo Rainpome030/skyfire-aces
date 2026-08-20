@@ -68,6 +68,28 @@ try {
     }
 
     if (check.touch) {
+      const client = await context.newCDPSession(page);
+      const originX = check.viewport.width * 0.42;
+      const originY = check.viewport.height * 0.58;
+      await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: originX, y: originY, id: 9, radiusX: 6, radiusY: 6 }] });
+      await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: originX, y: originY - 56, id: 9, radiusX: 6, radiusY: 6 }] });
+      await page.waitForTimeout(520);
+      const boosted = await page.evaluate(() => ({ state: window.__skyfireSlice?.getState(), stick: document.querySelector('#maneuver-stick')?.classList.contains('active') }));
+      if (!boosted.state || boosted.state.maneuver !== 'EXTEND' || boosted.state.speed <= initial.speed + 3 || !boosted.stick) {
+        throw new Error(`${check.name}: touch extend failed: ${JSON.stringify(boosted)}`);
+      }
+      await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    } else {
+      await page.keyboard.down('w');
+      await page.waitForTimeout(520);
+      const boosted = await page.evaluate(() => window.__skyfireSlice?.getState());
+      if (!boosted || boosted.maneuver !== 'EXTEND' || boosted.speed <= initial.speed + 3) {
+        throw new Error(`${check.name}: keyboard extend failed: ${JSON.stringify(boosted)}`);
+      }
+      await page.keyboard.up('w');
+    }
+
+    if (check.touch) {
       const altitudeBox = await page.locator('#altitude-control').boundingBox();
       if (!altitudeBox) throw new Error(`${check.name}: altitude button has no layout box`);
       await page.touchscreen.tap(altitudeBox.x + altitudeBox.width / 2, altitudeBox.y + altitudeBox.height / 2);
@@ -80,25 +102,57 @@ try {
     }
 
     if (check.touch) {
+      const altitudeBox = await page.locator('#altitude-control').boundingBox();
+      if (!altitudeBox) throw new Error(`${check.name}: altitude button disappeared`);
+      await page.touchscreen.tap(altitudeBox.x + altitudeBox.width / 2, altitudeBox.y + altitudeBox.height / 2);
+    } else await page.keyboard.press('Space');
+    await page.waitForFunction(() => {
+      const state = window.__skyfireSlice?.getState();
+      return state?.altitudeMode === 'LOW' && state.altitude < 18;
+    });
+
+    if (check.touch) {
       const client = await context.newCDPSession(page);
-      const touchX = check.viewport.width * 0.82;
+      const touchX = check.viewport.width * 0.58;
       const touchY = check.viewport.height * 0.52;
       await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: touchX, y: touchY, id: 1, radiusX: 6, radiusY: 6 }] });
-      await page.waitForTimeout(900);
+      await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: touchX + 62, y: touchY, id: 1, radiusX: 6, radiusY: 6 }] });
+      await page.waitForFunction(() => (window.__skyfireSlice?.getState().lockProgress ?? 0) > 0.04, null, { timeout: 4000 });
       await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-      const missileBox = await page.locator('#missile-control').boundingBox();
+      await page.waitForFunction(() => window.__skyfireSlice?.getState().lockReady === true, null, { timeout: 2500 });
+      const missileControl = page.locator('#missile-control');
+      const missileBox = await missileControl.boundingBox();
       if (!missileBox) throw new Error(`${check.name}: missile button has no layout box`);
-      await page.touchscreen.tap(missileBox.x + missileBox.width / 2, missileBox.y + missileBox.height / 2);
+      await missileControl.dispatchEvent('pointerdown', { pointerId: 7, pointerType: 'touch', isPrimary: true });
     } else {
       await page.keyboard.down('d');
-      await page.waitForTimeout(900);
+      await page.waitForFunction(() => (window.__skyfireSlice?.getState().lockProgress ?? 0) > 0.04, null, { timeout: 4000 });
       await page.keyboard.up('d');
+      await page.waitForFunction(() => window.__skyfireSlice?.getState().lockReady === true, null, { timeout: 2500 });
       await page.keyboard.press('e');
     }
     await page.waitForTimeout(250);
     const acted = await page.evaluate(() => window.__skyfireSlice?.getState());
-    if (!acted || acted.missilesFired !== 1 || Math.abs(acted.heading - initial.heading) < 0.25) {
-      throw new Error(`${check.name}: steer or missile action failed: ${JSON.stringify(acted)}`);
+    if (!acted || acted.missilesFired !== 1) {
+      throw new Error(`${check.name}: missile action failed: ${JSON.stringify(acted)}`);
+    }
+    if (check.touch) {
+      const client = await context.newCDPSession(page);
+      const originX = check.viewport.width * 0.45;
+      const originY = check.viewport.height * 0.52;
+      await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: originX, y: originY, id: 2, radiusX: 6, radiusY: 6 }] });
+      await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: originX - 62, y: originY + 38, id: 2, radiusX: 6, radiusY: 6 }] });
+      await page.waitForTimeout(320);
+      await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    } else {
+      await page.mouse.move(check.viewport.width * 0.18, check.viewport.height * 0.52);
+      await page.mouse.down();
+      await page.waitForTimeout(320);
+      await page.mouse.up();
+    }
+    const steered = await page.evaluate(() => window.__skyfireSlice?.getState());
+    if (!steered || Math.abs(steered.heading - acted.heading) < 0.25) {
+      throw new Error(`${check.name}: steer action failed: ${JSON.stringify(steered)}`);
     }
 
     const canvas = page.locator('canvas');

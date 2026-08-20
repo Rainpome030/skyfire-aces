@@ -3,19 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#061923" />
-    <title>苍穹之翼 · 海隙猎场</title>
+    <meta name="theme-color" content="#061116" />
+    <title>NIGHTLINK · 海隙猎场</title>
   </head>
   <body>
     <main id="app">
       <div id="game-root" aria-label="Three.js 俯视角飞行切片"></div>
       <div id="vignette" aria-hidden="true"></div>
-      <div id="altitude-scan" aria-hidden="true"></div>
       <div id="damage-flash" aria-hidden="true"></div>
 
       <section class="command-rail glass" aria-label="任务信息">
         <div class="command-topline">
-          <span>SKYFIRE // DATALINK 07</span>
+          <span>NIGHTLINK // SORTIE M01</span>
           <strong id="timer">03:30</strong>
         </div>
         <div class="mission-line">
@@ -32,15 +31,20 @@
 
       <section class="telemetry glass" aria-label="飞行状态">
         <div class="telemetry-heading">
-          <span>FLIGHT STATE</span>
+          <span>FLIGHT // <b id="recovery-status">RCV 1</b></span>
           <strong id="altitude-mode">低空</strong>
         </div>
         <div class="altitude-track"><i id="altitude-fill"></i></div>
+        <div class="maneuver-strip">
+          <span id="maneuver-state" data-maneuver="CRUISE">CRUISE · 自动</span>
+          <b id="advantage-status" class="hidden">ADVANTAGE</b>
+        </div>
+        <div id="tactic-status" class="tactic-status" data-tactic="NONE"><span>TACTIC</span><b>等待有效机动</b><em></em></div>
         <div class="telemetry-grid">
           <div><span>ALT</span><strong id="altitude">008</strong></div>
           <div><span>SPD</span><strong id="speed">044</strong></div>
-          <div><span>HP</span><strong id="hp">100</strong></div>
-          <div><span>SCORE</span><strong id="score">00000</strong></div>
+          <div><span>SYS</span><strong id="hp">100</strong></div>
+          <div><span>PTS</span><strong id="score">00000</strong></div>
         </div>
       </section>
 
@@ -48,25 +52,27 @@
       <div id="combat-toast" class="combat-toast" role="status"></div>
       <div id="target-cue" class="target-cue" aria-label="最近目标方向">
         <i id="target-arrow" aria-hidden="true">↑</i>
-        <span><b id="target-name">雷达站</b><small><em id="target-range">000</em> M</small></span>
+        <span><b id="target-name">雷达站</b><small><em id="target-range">000</em> M · <mark id="target-layer">LOW</mark></small></span>
       </div>
 
       <aside class="altitude-legend" aria-label="高度关系">
-        <span class="high">HIGH · 空中目标</span>
+        <span class="high">HIGH · 上方空域</span>
         <i></i>
         <span class="cloud">CLOUD 20</span>
         <i></i>
-        <span class="low">LOW · 地面目标</span>
+        <span class="low">LOW · 地面火力</span>
       </aside>
 
       <section class="controls-help glass" aria-label="键盘操作说明">
         <span><kbd>A</kbd><kbd>D</kbd> 转向</span>
+        <span><kbd>W</kbd> 加力 <kbd>S</kbd> 急转</span>
         <span><kbd>Space</kbd> 高度</span>
         <span><kbd>E</kbd> 导弹</span>
         <span><kbd>R</kbd> 重开</span>
       </section>
 
-      <div class="touch-hint" aria-hidden="true"><span>按住战场左右侧转向</span></div>
+      <div class="touch-hint" aria-hidden="true"><span>拖动战场 · 左右转向 / 上推加力 / 下拉急转</span></div>
+      <div id="maneuver-stick" class="maneuver-stick" aria-hidden="true"><i></i><b></b><span>W</span><em>S</em></div>
       <div class="touch-controls" aria-label="触屏控制">
         <button id="altitude-control" type="button" aria-label="切换高度">
           <span>ALTITUDE</span>
@@ -75,30 +81,32 @@
         </button>
         <button id="missile-control" type="button" aria-label="发射导弹">
           <span>MISSILE</span>
-          <strong id="missile-control-label">就绪</strong>
-          <small>需保持锁定</small>
+          <strong id="missile-control-label">搜索</strong>
+          <small id="missile-control-meta">4 枚 · 保持机头锁定</small>
         </button>
       </div>
 
       <section id="briefing-overlay" class="modal-layer" aria-label="任务简报">
         <div class="briefing-panel glass">
-          <div class="briefing-kicker">TACTICAL DEMONSTRATION // THREE.JS</div>
+          <div class="briefing-kicker">NIGHTLINK // TACTICAL DEMONSTRATION</div>
           <h2>海隙猎场</h2>
-          <p class="briefing-lead">只用转向、高度切换和一枚主动武器，在同一片海域完成一次地空转换演习。</p>
+          <p class="briefing-lead">用转向、能量机动、高度切换和有限导弹，在同一片海域完成一次有路线取舍、攻防转换与王牌阶段的地空演习。</p>
           <ol class="briefing-phases">
-            <li><b>01</b><span><strong>低空突入</strong><small>贴海切断雷达与防空火控</small></span></li>
-            <li><b>02</b><span><strong>高空拦截</strong><small>拉升进入双机编队的射击层</small></span></li>
-            <li><b>03</b><span><strong>交叉猎场</strong><small>在地面阵地与王牌之间主动选层</small></span></li>
+            <li><b>01</b><span><strong>低空突入</strong><small>高位俯冲打击后拉起，可形成 Boom &amp; Zoom</small></span></li>
+            <li><b>02</b><span><strong>错层拦截</strong><small>敌机各自占高低位；切高度改变交战几何</small></span></li>
+            <li><b>03</b><span><strong>交叉猎场</strong><small>用悠悠、抢先转弯和剪刀机动对付王牌</small></span></li>
           </ol>
           <div class="briefing-controls">
-            <span>战机自动前进、自动机炮</span>
-            <span>手机按住战场左右侧转向</span>
+            <span>A/D 转向 · W 加力延伸 · S 减速急转</span>
+            <span>S + 转向 + 切高度可做防御滚转，不提供无敌帧</span>
+            <span>导弹需持续锁定 · 全程仅一次救援</span>
+            <span>手机在战场任意位置二维拖动</span>
           </div>
           <button id="start-button" type="button" disabled><span id="start-status">正在装载战术模型…</span><strong>开始演习</strong></button>
           <p id="load-error" class="load-error" role="alert"></p>
           <details class="credits">
             <summary>模型鸣谢与许可</summary>
-            <p>主机模型 <a href="https://poly.pizza/m/1fi8ZIDdFCP" target="_blank" rel="noreferrer">Low poly Fighter</a>，作者 Stephen Graybill，采用 <a href="https://creativecommons.org/licenses/by/3.0/" target="_blank" rel="noreferrer">CC BY 3.0</a>；已重命名、缩放、居中、改色并添加细节。敌机与设施来自 <a href="https://kenney.nl/assets/space-kit" target="_blank" rel="noreferrer">Kenney Space Kit</a>（CC0）。<a href="/THIRD_PARTY_ASSETS.md" target="_blank">完整资产记录</a>随页面一同发布。</p>
+            <p>战机来自 Captain_Ahab_62 的 <a href="https://opengameart.org/content/fighter-jets" target="_blank" rel="noreferrer">Fighter jets</a>；基地、炮塔与巡逻艇分别来自 the_jay、PolygonDan 与 Sketlux / yd，均为 <a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noreferrer">CC0</a>。战术显示采用 B612（OFL 1.1）。所有资产均已为本演示重新导出、缩放与着色。<a href="/THIRD_PARTY_ASSETS.md" target="_blank">完整资产记录</a>随页面一同发布。</p>
           </details>
         </div>
       </section>
@@ -108,13 +116,20 @@
           <div class="briefing-kicker">AFTER ACTION REPORT</div>
           <h2 id="summary-title">演习完成</h2>
           <p id="summary-subtitle">地空威胁均已解除</p>
-          <div class="summary-score"><span>SCORE</span><strong id="summary-score">00000</strong></div>
+          <div class="summary-score">
+            <div class="summary-grade"><span>GRADE</span><b id="summary-grade">—</b></div>
+            <div><span>SCORE</span><strong id="summary-score">00000</strong></div>
+          </div>
           <dl class="summary-grid">
             <div><dt>摧毁目标</dt><dd id="summary-kills">0</dd></div>
             <div><dt>高度切换</dt><dd id="summary-switches">0</dd></div>
             <div><dt>导弹命中</dt><dd id="summary-missiles">0/0</dd></div>
             <div><dt>承受伤害</dt><dd id="summary-damage">0</dd></div>
             <div><dt>救援复位</dt><dd id="summary-recoveries">0</dd></div>
+            <div><dt>成功规避</dt><dd id="summary-evasions">0</dd></div>
+            <div><dt>迫使冲前</dt><dd id="summary-overshoots">0</dd></div>
+            <div class="summary-maneuvers"><dt>识别机动</dt><dd id="summary-tactics">—</dd></div>
+            <div><dt>突入路线</dt><dd id="summary-route">—</dd></div>
             <div><dt>剩余时间</dt><dd id="summary-time">0s</dd></div>
           </dl>
           <button id="restart-button" type="button">再次演习</button>

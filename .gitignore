@@ -12,3 +12,4 @@ outputs/备份/
 
 # Generated visual artifacts
 *.png
+!v2/prototype-flight-slice/public/assets/textures/skyfire-cloud-512.png

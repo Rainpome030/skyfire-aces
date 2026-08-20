@@ -1,32 +1,36 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-export type ModelKey = 'player' | 'interceptor' | 'aa' | 'radar' | 'hangar';
+export type ModelKey = 'player' | 'interceptor' | 'ace' | 'aa' | 'radar' | 'island' | 'patrol';
 
 const MODEL_URLS: Record<ModelKey, string> = {
-  player: '/assets/models/skyfire-player-fighter.glb',
-  interceptor: '/assets/models/skyfire-interceptor.glb',
-  aa: '/assets/models/skyfire-aa-turret.glb',
+  player: '/assets/models/skyfire-player-f14.glb',
+  interceptor: '/assets/models/skyfire-interceptor-rafale.glb',
+  ace: '/assets/models/skyfire-ace-f15.glb',
+  aa: '/assets/models/skyfire-aa-turret-pbr.glb',
   radar: '/assets/models/skyfire-radar.glb',
-  hangar: '/assets/models/skyfire-hangar.glb'
+  island: '/assets/models/skyfire-military-island.glb',
+  patrol: '/assets/models/skyfire-patrol-boat.glb'
 };
 
 const TARGET_SPANS: Record<ModelKey, number> = {
-  player: 9.2,
-  interceptor: 8.1,
+  player: 10.8,
+  interceptor: 9.4,
+  ace: 10.6,
   aa: 5.8,
   radar: 7.2,
-  hangar: 11.5
+  island: 46,
+  patrol: 15
 };
 
-function makeMaterial(color: number, emissive = 0x000000, emissiveIntensity = 0): THREE.MeshStandardMaterial {
+function makeMaterial(color: number, emissive = 0x000000, emissiveIntensity = 0, smooth = false): THREE.MeshStandardMaterial {
   return new THREE.MeshStandardMaterial({
     color,
     emissive,
     emissiveIntensity,
     roughness: 0.46,
     metalness: 0.42,
-    flatShading: true
+    flatShading: !smooth
   });
 }
 
@@ -51,12 +55,25 @@ export class ModelAssets {
     let meshIndex = 0;
     model.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
-      const color = palette[meshIndex % Math.max(1, palette.length)] ?? 0x7ea1aa;
-      const hot = color === 0x70eaff || color === 0xffbc66 || color === 0xff556c;
-      child.material = makeMaterial(color, hot ? color : 0x000000, hot ? 0.24 : 0);
+      const sourceMaterials = Array.isArray(child.material) ? child.material : [child.material];
+      const mappedMaterials = sourceMaterials.map((sourceMaterial, materialIndex) => {
+        if (key === 'island' && sourceMaterial instanceof THREE.MeshStandardMaterial) {
+          const material = sourceMaterial.clone();
+          material.color.multiply(new THREE.Color(0x7d8b83));
+          material.roughness = 0.88;
+          material.metalness = 0.08;
+          material.emissive.setHex(0x000000);
+          material.emissiveIntensity = 0;
+          return material;
+        }
+        const color = palette[(meshIndex + materialIndex) % Math.max(1, palette.length)] ?? 0x7ea1aa;
+        const hot = color === 0x70eaff || color === 0xffbc66 || color === 0xff556c;
+        return makeMaterial(color, hot ? color : 0x000000, hot ? 0.24 : 0, key === 'aa' || key === 'patrol');
+      });
+      child.material = Array.isArray(child.material) ? mappedMaterials : mappedMaterials[0]!;
       child.castShadow = false;
       child.receiveShadow = false;
-      meshIndex += 1;
+      meshIndex += sourceMaterials.length;
     });
 
     const initialBox = new THREE.Box3().setFromObject(model);

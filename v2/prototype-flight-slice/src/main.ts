@@ -1,5 +1,5 @@
-// PROTOTYPE QUESTION: can a world-stable top-down camera, real altitude, and
-// three limited inputs produce readable tactical flight on desktop and mobile?
+// PROTOTYPE QUESTION: can one turn axis, one energy axis, and a binary altitude
+// command create recognizable, outcome-based air-combat maneuvers without camera roll?
 import './styles.css';
 import { FlightSliceSimulation } from './core/simulation';
 import type { ControlFrame } from './core/types';
@@ -16,9 +16,28 @@ declare global {
         timeRemaining: number;
         altitudeMode: string;
         altitude: number;
+        verticalSpeed: number;
         heading: number;
+        speed: number;
+        maneuver: string;
+        activeTactic: string;
+        lastTactic: string;
+        tacticChain: number;
+        advantageTime: number;
+        enemyAltitudes: Array<{ id: number; altitude: number; intent: string }>;
         enemiesAlive: number;
         missilesFired: number;
+        missilesRemaining: number;
+        sensorTargetId: number | null;
+        lockTargetId: number | null;
+        lockProgress: number;
+        lockReady: boolean;
+        lockPerfect: boolean;
+        lockAngleDegrees: number;
+        projectiles: number;
+        playerMissiles: number;
+        recoveryTokens: number;
+        grade: string;
         phase: string;
         outcome: string;
       };
@@ -40,10 +59,11 @@ const restartButton = required<HTMLButtonElement>('#restart-button');
 const briefingOverlay = required<HTMLElement>('#briefing-overlay');
 const startStatus = required<HTMLElement>('#start-status');
 const loadError = required<HTMLElement>('#load-error');
+const maneuverStick = required<HTMLElement>('#maneuver-stick');
 
 const simulation = new FlightSliceSimulation();
 const renderer = new FlightRenderer(root);
-const input = new InputController(renderer.canvas, altitudeButton, missileButton);
+const input = new InputController(renderer.canvas, altitudeButton, missileButton, maneuverStick);
 const hud = new SliceHud();
 
 let assetsReady = false;
@@ -63,9 +83,30 @@ window.__skyfireSlice = {
     timeRemaining: simulation.state.timeRemaining,
     altitudeMode: simulation.state.player.altitudeMode,
     altitude: simulation.state.player.position.y,
+    verticalSpeed: simulation.state.player.verticalSpeed,
     heading: simulation.state.player.heading,
+    speed: simulation.state.player.speed,
+    maneuver: simulation.state.player.maneuver,
+    activeTactic: simulation.state.activeTactic,
+    lastTactic: simulation.state.lastTactic,
+    tacticChain: simulation.state.tacticChain,
+    advantageTime: simulation.state.player.advantageTime,
+    enemyAltitudes: simulation.state.enemies
+      .filter((enemy) => enemy.alive && (enemy.kind === 'interceptor' || enemy.kind === 'ace'))
+      .map((enemy) => ({ id: enemy.id, altitude: enemy.position.y, intent: enemy.intent })),
     enemiesAlive: simulation.state.enemies.filter((enemy) => enemy.alive).length,
     missilesFired: simulation.state.metrics.missilesFired,
+    missilesRemaining: simulation.state.player.missilesRemaining,
+    sensorTargetId: simulation.state.sensorTargetId,
+    lockTargetId: simulation.state.lockTargetId,
+    lockProgress: simulation.state.lockProgress,
+    lockReady: simulation.state.lockReady,
+    lockPerfect: simulation.state.lockPerfect,
+    lockAngleDegrees: simulation.state.lockAngleDegrees,
+    projectiles: simulation.state.projectiles.length,
+    playerMissiles: simulation.state.playerMissiles.length,
+    recoveryTokens: simulation.state.recoveryTokens,
+    grade: simulation.state.grade,
     phase: simulation.state.phase,
     outcome: simulation.state.outcome
   })
@@ -114,6 +155,7 @@ function frame(nowMs: number): void {
     while (accumulator >= fixedStep) {
       const controls: ControlFrame = {
         steer: firstControls.steer,
+        energy: firstControls.energy,
         toggleAltitude: pendingAltitudeToggle,
         fireMissile: pendingMissile,
         reset: pendingReset
